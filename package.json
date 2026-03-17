@@ -1,0 +1,43 @@
+{
+  "name": "email-bitable-sidebar-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "邮箱同步插件，用于将邮件同步到飞书多维表格",
+  "scripts": {
+    "dev": "vite",
+    "start": "npm run dev",
+    "server": "node server/index.js",
+    "server:dev": "node --watch server/index.js",
+    "cf:dev": "wrangler dev --config wrangler-email.toml",
+    "cf:deploy": "wrangler deploy --config wrangler-email.toml",
+    "cf:dev:weread": "wrangler dev --config wrangler.toml",
+    "cf:deploy:weread": "wrangler deploy --config wrangler.toml",
+    "dev:all": "npm run server:dev",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "output": "dist",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/jquery": "^3.5.16",
+    "sass": "^1.63.6",
+    "typescript": "^4.7.4",
+    "vite": "^3.0.4",
+    "wrangler": "^3.114.0"
+  },
+  "dependencies": {
+    "@lark-base-open/js-sdk": "^0.5.0",
+    "@lark-base-open/node-sdk": "^1.0.1",
+    "bootstrap": "^5.3.3",
+    "cf-imap": "^0.0.12",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "imapflow": "^1.2.13",
+    "jquery": "^3.7.1",
+    "mailparser": "^3.9.4",
+    "node-cron": "^4.2.1",
+    "reset-css": "^5.0.1"
+  }
+}

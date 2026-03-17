@@ -1,0 +1,19 @@
+name = "email-sync-service"
+main = "cloudflare/email-worker.js"
+compatibility_date = "2026-03-11"
+compatibility_flags = ["nodejs_compat"]
+
+routes = [
+  { pattern = "wereadsync.xiaomiao.win", custom_domain = true }
+]
+
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+STRIPE_PRODUCT_NAME = "邮箱同步飞书多维表格"
+STRIPE_PUBLISHABLE_KEY = "pk_test_51RnjVDGbjgkec0xRClmOwX8maIRE3YtFrMKSwN9pMp6kE9wHotVvnjxVz33FDVs3ivoa1VKhWgvMXnoCcg2Mu2SZ00BfthPAjz"
+
+[[kv_namespaces]]
+binding = "EMAIL_STATE"
+id = "0f0d3c6453bf45daa1df06e90bca39b1"
