@@ -3,6 +3,7 @@ import './index.scss';
 import { bitable } from '@lark-base-open/js-sdk';
 import { startEmailSync, checkEmailQuota, updateEmailUsage, fetchEmailFolders } from './email-api';
 import { prepareEmailTable, writeEmailRecords } from './email-table-operations';
+import { setLocale, applyI18n, t } from './i18n';
 
 // 所有 API 统一使用 Cloudflare Worker（cf-imap + Stripe）
 const BASE_URL = (import.meta.env.VITE_WORKER_BASE_URL as string) || 'https://wereadsync.xiaomiao.win';
@@ -16,6 +17,17 @@ $(function () {
 });
 
 async function initializeApp() {
+  // Detect language from bitable SDK
+  try {
+    const env = await bitable.bridge.getEnv();
+    if ((env as any)?.lang) {
+      setLocale((env as any).lang);
+    }
+  } catch (_) {
+    // fallback to zh
+  }
+  applyI18n();
+
   setDefaultConfig();
   bindEvents();
   try {
@@ -33,7 +45,7 @@ function setDefaultConfig() {
   $('#maxMessages').val('100');
   $('#imapHost').val('imap.gmail.com');
   $('#imapPort').val('993');
-  $('#tableName').val('邮箱同步');
+  $('#tableName').val(t('placeholder.tableName'));
   $('#folder').val('INBOX');
   $('#secure').prop('checked', true);
 }
@@ -106,14 +118,18 @@ function applyProviderPreset(provider: string) {
   }
 
   // 显示各平台的授权码/密码提示
-  const hints: Record<string, string> = {
-    gmail: '需使用「应用专用密码」：Google 账号 → 安全性 → 两步验证 → 应用专用密码',
-    qq: '需使用「授权码」：QQ 邮箱设置 → 账户 → 开启 IMAP → 生成授权码',
-    '163': '需使用「授权码」：163 邮箱设置 → POP3/IMAP → 开启 IMAP → 新增授权密码',
-    feishu: '需使用「专用密码」：飞书邮箱设置 → IMAP/SMTP → 创建专用密码',
-    yahoo: '需使用「应用密码」：Yahoo 账户安全 → 生成应用密码',
-    outlook: 'Outlook 目前仅支持 OAuth2 认证，暂不支持密码/授权码方式连接'
+  const hintKeys: Record<string, string> = {
+    gmail: 'hint.gmail',
+    qq: 'hint.qq',
+    '163': 'hint.163',
+    feishu: 'hint.feishu',
+    yahoo: 'hint.yahoo',
+    outlook: 'hint.outlook'
   };
+  const hints: Record<string, string> = {};
+  for (const [k, v] of Object.entries(hintKeys)) {
+    hints[k] = t(v);
+  }
   const $hint = $('#providerHint');
   if (hints[provider]) {
     $hint.text(hints[provider]).show();
@@ -128,12 +144,12 @@ async function handleLoadFolders() {
   const email = getEmail();
   const password = getPassword();
   if (!email || !password) {
-    showResult('请先填写邮箱账号与授权码/密码', 'error');
+    showResult(t('msg.fillEmailFirst'), 'error');
     return;
   }
 
   const $btn = $('#loadFolders');
-  $btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> 加载中');
+  $btn.prop('disabled', true).html(`<i class="fas fa-spinner fa-spin"></i> ${t('msg.loadingFolders')}`);
 
   try {
     const folders = await fetchEmailFolders(BASE_URL, {
@@ -148,9 +164,9 @@ async function handleLoadFolders() {
     loadedFolders = folders;
     renderFolderCheckboxes(folders);
   } catch (error) {
-    showResult(`获取文件夹失败：${(error as Error).message}`, 'error');
+    showResult(t('msg.folderLoadFailed', { error: (error as Error).message }), 'error');
   } finally {
-    $btn.prop('disabled', false).html('<i class="fas fa-folder-open"></i> 获取文件夹');
+    $btn.prop('disabled', false).html(`<i class="fas fa-folder-open"></i> ${t('btn.loadFolders')}`);
   }
 }
 
@@ -206,7 +222,7 @@ async function handleStartSync() {
   const folders = getSelectedFolders();
 
   if (!email || !password) {
-    showResult('请先填写邮箱账号与授权码/密码', 'error');
+    showResult(t('msg.fillEmailFirst'), 'error');
     return;
   }
 
@@ -215,11 +231,11 @@ async function handleStartSync() {
 
     // Check quota if userId is available
     if (currentUserId) {
-      updateProgress(5, '检查同步配额');
+      updateProgress(5, t('msg.checkingQuota'));
       try {
         const quota = await checkEmailQuota(BASE_URL, currentUserId);
         if (!quota.paid && quota.remaining <= 0) {
-          showResult(`免费 ${quota.total} 封额度已用完，升级付费版可同步全部邮件。`, 'info', true);
+          showResult(t('msg.quotaExhausted', { total: String(quota.total) }), 'info', true);
           hideProgress();
           return;
         }
@@ -236,7 +252,7 @@ async function handleStartSync() {
     for (let fi = 0; fi < folders.length; fi++) {
       const folder = folders[fi];
       const folderProgress = 10 + (fi / folders.length) * 40;
-      updateProgress(folderProgress, `拉取 ${folder} (${fi + 1}/${folders.length})`);
+      updateProgress(folderProgress, t('msg.fetchingFolder', { folder, current: String(fi + 1), total: String(folders.length) }));
 
       try {
         const syncResponse = await startEmailSync(BASE_URL, {
@@ -251,12 +267,12 @@ async function handleStartSync() {
           userId: currentUserId || undefined
         });
         if ((syncResponse as any).status === 'quota_exceeded') {
-          showResult((syncResponse as any).message || '免费额度已用完', 'info');
+          showResult((syncResponse as any).message || t('msg.quotaExhausted', { total: '' }), 'info');
           hideProgress();
           return;
         }
         if (syncResponse.status !== 'completed') {
-          folderErrors.push(`${folder}: ${syncResponse.message || '失败'}`);
+          folderErrors.push(`${folder}: ${syncResponse.message || 'failed'}`);
           continue;
         }
         const emails = Array.isArray(syncResponse.emails) ? syncResponse.emails : [];
@@ -272,20 +288,20 @@ async function handleStartSync() {
     }
 
     if (!allEmails.length && folderErrors.length) {
-      throw new Error(`所有文件夹同步失败：\n${folderErrors.join('\n')}`);
+      throw new Error(`${t('msg.allFoldersFailed')}\n${folderErrors.join('\n')}`);
     }
     if (!allEmails.length) {
-      showResult('同步完成，但未拉取到新邮件', 'info');
-      updateProgress(100, '未发现新邮件');
+      showResult(t('msg.noNewEmails'), 'info');
+      updateProgress(100, t('msg.noNewEmails'));
       return;
     }
 
-    updateProgress(55, '准备目标数据表');
+    updateProgress(55, t('msg.preparingTable'));
     const table = await prepareEmailTable(tableName, (progress, message) => {
       updateProgress(55 + progress * 0.1, message);
     });
 
-    updateProgress(65, '写入多维表格');
+    updateProgress(65, t('msg.writingRecords'));
     const stats = await writeEmailRecords(table, provider, allEmails, BASE_URL, (progress, message) => {
       updateProgress(65 + progress * 0.35, message);
     });
@@ -299,21 +315,21 @@ async function handleStartSync() {
       }
     }
 
-    updateProgress(100, '同步完成');
-    const folderLabel = folders.length > 1 ? `（${folders.length} 个文件夹）` : '';
-    let resultMsg = `同步完成${folderLabel}：拉取 ${stats.total} 封，新增 ${stats.inserted} 封，跳过重复 ${stats.skipped} 封。`;
+    updateProgress(100, t('msg.syncComplete'));
+    const folderLabel = folders.length > 1 ? ` (${folders.length} folders)` : '';
+    let resultMsg = `${t('msg.syncComplete')}${folderLabel}：${stats.total} / ${stats.inserted} / ${stats.skipped}`;
     if (stats.patchedAttachments > 0) {
-      resultMsg += `\n补充了 ${stats.patchedAttachments} 条旧记录的附件。`;
+      resultMsg += `\n${t('msg.patchedAttachments', { count: String(stats.patchedAttachments) })}`;
     }
     if (folderErrors.length) {
-      resultMsg += `\n部分文件夹失败：${folderErrors.join('；')}`;
+      resultMsg += `\n${t('msg.partialFoldersFailed')}${folderErrors.join('；')}`;
     }
     if (!currentUserPaid) {
-      resultMsg += '\n免费版仅可同步 3 封邮件，升级付费版可同步全部邮件。';
+      resultMsg += `\n${t('msg.freeLimit')}`;
     }
     showResult(resultMsg, folderErrors.length ? 'info' : 'success', !currentUserPaid);
   } catch (error) {
-    showResult(`同步失败：${(error as Error).message}`, 'error');
+    showResult(t('msg.syncFailed', { error: (error as Error).message }), 'error');
     hideProgress();
   } finally {
     setSyncLoading(false);
@@ -325,7 +341,7 @@ function setSyncLoading(loading: boolean) {
   const text = $('#syncBtnText');
   const spinner = $('#syncLoadingSpinner');
   button.prop('disabled', loading);
-  text.text(loading ? '同步中...' : '确认并同步');
+  text.text(loading ? t('btn.syncing') : t('btn.sync'));
   if (loading) spinner.show();
   else spinner.hide();
 }
@@ -351,7 +367,7 @@ function showResult(message: string, type: 'success' | 'error' | 'info', showUpg
   const messageEl = $('#resultMessage');
   let html = escapeHtml(message).replace(/\n/g, '<br>');
   if (showUpgrade) {
-    html += '<br><a class="result-upgrade-link" href="javascript:void(0)" id="resultUpgradeLink">升级付费版 &rarr;</a>';
+    html += `<br><a class="result-upgrade-link" href="javascript:void(0)" id="resultUpgradeLink">${escapeHtml(t('msg.upgradeLink'))} &rarr;</a>`;
   }
   messageEl.removeClass('success error info').addClass(type).html(html);
   $('#resultContainer').show();
@@ -412,16 +428,16 @@ async function handleUpgrade() {
     });
     if (!resp.ok) {
       const errData = await resp.json().catch(() => null);
-      throw new Error(errData?.message || `请求失败：${resp.status}`);
+      throw new Error(errData?.message || `Request failed: ${resp.status}`);
     }
     const data = await resp.json();
     if (data?.url) {
       window.open(data.url, '_blank');
     } else {
-      showResult('无法创建支付链接，请稍后重试', 'error');
+      showResult(t('msg.createCheckoutFailed'), 'error');
     }
   } catch (error) {
-    showResult(`升级失败：${(error as Error).message}`, 'error');
+    showResult(t('msg.upgradeFailed', { error: (error as Error).message }), 'error');
   }
 }
 
@@ -476,31 +492,31 @@ function renderScheduleList(schedules: ScheduleItem[]) {
   }
 
   $container.show();
-  $count.text(`${schedules.length} 个任务`);
+  $count.text(`${schedules.length} ${t('schedule.tasks')}`);
   $list.empty();
 
   const providerLabels: Record<string, string> = {
     gmail: 'Gmail',
     qq: 'QQ',
     '163': '163',
-    feishu: '飞书',
+    feishu: t('provider.feishu'),
     yahoo: 'Yahoo',
     outlook: 'Outlook',
-    custom: '自定义'
+    custom: t('provider.custom')
   };
 
   const intervalLabels: Record<number, string> = {
-    1: '每小时',
-    3: '每3小时',
-    6: '每6小时',
-    12: '每12小时',
-    24: '每天'
+    1: t('schedule.perHour'),
+    3: t('schedule.perNHours', { n: '3' }),
+    6: t('schedule.perNHours', { n: '6' }),
+    12: t('schedule.perNHours', { n: '12' }),
+    24: t('schedule.perDay')
   };
 
   for (const s of schedules) {
     const providerLabel = providerLabels[s.provider] || s.provider;
-    const intervalLabel = intervalLabels[s.intervalHours] || `每${s.intervalHours}小时`;
-    const lastSyncText = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : '尚未同步';
+    const intervalLabel = intervalLabels[s.intervalHours] || t('schedule.perNHours', { n: String(s.intervalHours) });
+    const lastSyncText = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : t('msg.notSynced');
     const statusClass = s.lastSyncStatus === 'success' ? 'schedule-item-status-ok'
       : s.lastSyncStatus === 'failed' ? 'schedule-item-status-fail' : '';
     const statusIcon = s.lastSyncStatus === 'success' ? 'fa-circle-check'
@@ -514,7 +530,7 @@ function renderScheduleList(schedules: ScheduleItem[]) {
             <span class="schedule-item-email">${escapeHtml(s.email)}</span>
           </div>
           <div class="schedule-item-actions">
-            <button class="schedule-item-btn schedule-item-btn-delete" title="删除">
+            <button class="schedule-item-btn schedule-item-btn-delete" title="Delete">
               <i class="fas fa-trash-can"></i>
             </button>
           </div>
@@ -556,15 +572,15 @@ async function handleEnableSchedule() {
   const password = getPassword();
 
   if (!email || !password) {
-    showScheduleResult('请先在上方填写邮箱账号与授权码/密码', 'error');
+    showScheduleResult(t('msg.fillTokenFirst'), 'error');
     return;
   }
   if (!personalBaseToken) {
-    showScheduleResult('请填写多维表格授权码', 'error');
+    showScheduleResult(t('msg.fillBaseToken'), 'error');
     return;
   }
   if (!appToken || !tableId) {
-    showScheduleResult('请填写 AppToken 和 TableId', 'error');
+    showScheduleResult(t('msg.fillAppToken'), 'error');
     return;
   }
 
@@ -595,20 +611,20 @@ async function handleEnableSchedule() {
     const data = await resp.json();
 
     if (data.status !== 'ok') {
-      throw new Error(data.message || '创建定时任务失败');
+      throw new Error(data.message || t('msg.scheduleAddFailed', { error: 'unknown' }));
     }
 
-    showScheduleResult(`已添加 ${email} 的定时同步，每 ${intervalHours} 小时自动同步`, 'success');
+    showScheduleResult(t('msg.scheduleAdded', { email, interval: String(intervalHours) }), 'success');
     await refreshScheduleList();
   } catch (error) {
-    showScheduleResult(`添加失败：${(error as Error).message}`, 'error');
+    showScheduleResult(t('msg.scheduleAddFailed', { error: (error as Error).message }), 'error');
   } finally {
     $('#enableSchedule').prop('disabled', false);
   }
 }
 
 async function handleDeleteSchedule(scheduleId: string, email: string) {
-  if (!confirm(`确定要删除 ${email} 的定时同步吗？`)) return;
+  if (!confirm(t('msg.confirmDelete', { email }))) return;
 
   try {
     const resp = await fetch(`${BASE_URL}/api/schedule/delete`, {
@@ -618,13 +634,13 @@ async function handleDeleteSchedule(scheduleId: string, email: string) {
     });
     const data = await resp.json();
     if (data.status !== 'ok') {
-      throw new Error(data.message || '删除定时任务失败');
+      throw new Error(data.message || t('msg.scheduleDeleteFailed'));
     }
 
-    showScheduleResult(`已删除 ${email} 的定时同步`, 'info');
+    showScheduleResult(t('msg.scheduleDeleted', { email }), 'info');
     await refreshScheduleList();
   } catch (error) {
-    showScheduleResult(`删除失败：${(error as Error).message}`, 'error');
+    showScheduleResult(t('msg.deleteFailed', { error: (error as Error).message }), 'error');
   }
 }
 

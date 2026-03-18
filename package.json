@@ -1,8 +1,8 @@
 {
-  "name": "email-bitable-sidebar-plugin",
+  "name": "email-bitable-sync-plugin",
   "version": "1.0.0",
   "type": "module",
-  "description": "邮箱同步插件，用于将邮件同步到飞书多维表格",
+  "description": "Email Sync Plugin for Feishu Bitable - Sync Gmail, QQ, Feishu, 163, Yahoo emails to Bitable with attachments",
   "scripts": {
     "dev": "vite",
     "start": "npm run dev",

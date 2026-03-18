@@ -12,7 +12,7 @@ crons = ["0 * * * *"]
 
 [vars]
 STRIPE_PRODUCT_NAME = "邮箱同步飞书多维表格"
-STRIPE_PUBLISHABLE_KEY = "pk_test_51RnjVDGbjgkec0xRClmOwX8maIRE3YtFrMKSwN9pMp6kE9wHotVvnjxVz33FDVs3ivoa1VKhWgvMXnoCcg2Mu2SZ00BfthPAjz"
+STRIPE_PUBLISHABLE_KEY = "pk_live_51RnjToGcUZLGzSsVpGqXDJt4ZZvOdS0kAQnOwXdcAMRSvPQN2u6XNC3qBAtBcFScnzQeczJscofJVSSZm4rmJGSX008k4tQfUZ"
 
 [[kv_namespaces]]
 binding = "EMAIL_STATE"
