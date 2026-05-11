@@ -1548,6 +1548,178 @@ async function handleScheduleTrigger(req, env) {
   }
 }
 
+// ─── Alipay 当面付 ────────────────────────────────────────
+
+const ALIPAY_GATEWAY = 'https://openapi.alipay.com/gateway.do';
+
+function cleanBase64Key(raw) {
+  return raw.replace(/-----[A-Z\s]+-----/g, '').replace(/[\s\r\n]/g, '');
+}
+
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function rsaSign(content, privateKeyBase64) {
+  const binaryDer = base64ToUint8Array(cleanBase64Key(privateKeyBase64));
+  const key = await crypto.subtle.importKey('pkcs8', binaryDer, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(content));
+  const bytes = new Uint8Array(signature);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function rsaVerify(content, signatureBase64, publicKeyBase64) {
+  const binaryDer = base64ToUint8Array(cleanBase64Key(publicKeyBase64));
+  const key = await crypto.subtle.importKey('spki', binaryDer, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  const sigBytes = base64ToUint8Array(signatureBase64);
+  return crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, sigBytes, new TextEncoder().encode(content));
+}
+
+function formatAlipayTimestamp() {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+function buildAlipaySignString(params) {
+  return Object.keys(params)
+    .filter((k) => params[k] !== undefined && params[k] !== '' && params[k] !== null)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+}
+
+async function alipayRequest(env, method, bizContent, extraParams = {}) {
+  const appId = String(env.ALIPAY_APP_ID || '').trim();
+  const privateKey = String(env.ALIPAY_APP_PRIVATE_KEY || '').trim();
+  if (!appId || !privateKey) throw new Error('未配置支付宝应用参数 (ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY)');
+  const params = {
+    app_id: appId,
+    method,
+    charset: 'utf-8',
+    sign_type: 'RSA2',
+    timestamp: formatAlipayTimestamp(),
+    version: '1.0',
+    biz_content: JSON.stringify(bizContent),
+    ...extraParams
+  };
+  params.sign = await rsaSign(buildAlipaySignString(params), privateKey);
+  const response = await fetch(ALIPAY_GATEWAY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+    body: new URLSearchParams(params).toString()
+  });
+  const result = await response.json();
+  const data = result[method.replace(/\./g, '_') + '_response'];
+  if (!data || data.code !== '10000') throw new Error(data?.sub_msg || data?.msg || `支付宝接口失败: ${method}`);
+  return data;
+}
+
+function generateOutTradeNo() {
+  return `EM${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function createAlipayPrecreateOrder(env, userId, req) {
+  const amount = String(env.ALIPAY_AMOUNT || '980.00').trim();
+  const subject = String(env.ALIPAY_SUBJECT || getStripeProductName(env)).trim();
+  const outTradeNo = generateOutTradeNo();
+  const requestUrl = new URL(req.url);
+  const baseUrl = String(env.ALIPAY_NOTIFY_BASE_URL || env.APP_BASE_URL || `${requestUrl.protocol}//${requestUrl.host}`).trim();
+  const notifyUrl = `${baseUrl}/api/alipay/notify`;
+  const result = await alipayRequest(
+    env,
+    'alipay.trade.precreate',
+    { out_trade_no: outTradeNo, total_amount: amount, subject },
+    { notify_url: notifyUrl }
+  );
+  await putState(
+    env,
+    `email:pay:trade:${outTradeNo}`,
+    { userId, amount, subject, status: 'WAIT_BUYER_PAY', qrCode: result.qr_code, createdAt: Date.now() },
+    60 * 60 * 24
+  );
+  return { outTradeNo, qrCode: result.qr_code };
+}
+
+async function handleCreateAlipayOrder(req, env) {
+  try {
+    const body = (await req.json().catch(() => ({}))) || {};
+    const userId = normalizeUserId(body?.userId);
+    if (!userId) return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 userId' });
+    const order = await createAlipayPrecreateOrder(env, userId, req);
+    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode });
+  } catch (error) {
+    return jsonResponse(req, env, 500, { status: 'failed', message: `创建支付宝订单失败：${error?.message || 'unknown error'}` });
+  }
+}
+
+async function handleAlipayTradeQuery(req, env) {
+  const url = new URL(req.url);
+  const outTradeNo = String(url.searchParams.get('outTradeNo') || '').trim();
+  if (!outTradeNo) return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 outTradeNo' });
+  const tradeInfo = await getState(env, `email:pay:trade:${outTradeNo}`);
+  if (!tradeInfo) return jsonResponse(req, env, 404, { status: 'failed', message: '订单不存在或已过期' });
+  if (tradeInfo.status === 'TRADE_SUCCESS') {
+    return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'TRADE_SUCCESS', paid: true });
+  }
+  if (tradeInfo.userId) {
+    const entitlement = await getEntitlementByUserId(env, tradeInfo.userId);
+    if (resolveEntitlementActive(entitlement)) {
+      return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'TRADE_SUCCESS', paid: true });
+    }
+  }
+  try {
+    const result = await alipayRequest(env, 'alipay.trade.query', { out_trade_no: outTradeNo });
+    const tradeStatus = String(result.trade_status || '');
+    if (tradeStatus === 'TRADE_SUCCESS' || tradeStatus === 'TRADE_FINISHED') {
+      const expiresAt = Date.now() + YEAR_SECONDS * 1000;
+      await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_trade', expiresAt);
+      tradeInfo.status = 'TRADE_SUCCESS';
+      await putState(env, `email:pay:trade:${outTradeNo}`, tradeInfo, 60 * 60 * 24);
+      return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'TRADE_SUCCESS', paid: true });
+    }
+    return jsonResponse(req, env, 200, { status: 'ok', tradeStatus, paid: false });
+  } catch (_) {
+    return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'WAIT_BUYER_PAY', paid: false });
+  }
+}
+
+async function handleAlipayNotify(req, env) {
+  const rawBody = await req.text();
+  const params = Object.fromEntries(new URLSearchParams(rawBody));
+  const sign = params.sign || '';
+  const signType = params.sign_type || 'RSA2';
+  if (signType !== 'RSA2') return new Response('failure', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+  const verifyParams = { ...params };
+  delete verifyParams.sign;
+  delete verifyParams.sign_type;
+  const signString = buildAlipaySignString(verifyParams);
+  const publicKey = String(env.ALIPAY_PUBLIC_KEY || '').trim();
+  if (!publicKey) return new Response('failure', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+  let verified = false;
+  try {
+    verified = await rsaVerify(signString, sign, publicKey);
+  } catch (_) {}
+  if (!verified) return new Response('failure', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+  const tradeStatus = params.trade_status || '';
+  const outTradeNo = params.out_trade_no || '';
+  if (tradeStatus === 'TRADE_SUCCESS' || tradeStatus === 'TRADE_FINISHED') {
+    const tradeInfo = await getState(env, `email:pay:trade:${outTradeNo}`);
+    if (tradeInfo && tradeInfo.userId) {
+      const expiresAt = Date.now() + YEAR_SECONDS * 1000;
+      await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_notify', expiresAt);
+      tradeInfo.status = 'TRADE_SUCCESS';
+      await putState(env, `email:pay:trade:${outTradeNo}`, tradeInfo, 60 * 60 * 24);
+    }
+  }
+  return new Response('success', { status: 200, headers: { 'Content-Type': 'text/plain' } });
+}
+
 // ─── router ───────────────────────────────────────────────
 
 export default {
@@ -1610,6 +1782,16 @@ export default {
     }
     if (req.method === 'POST' && pathname === '/api/stripe/webhook') {
       return handleStripeWebhook(req, env);
+    }
+    // alipay 当面付
+    if (req.method === 'POST' && pathname === '/api/alipay/create-order') {
+      return handleCreateAlipayOrder(req, env);
+    }
+    if (req.method === 'GET' && pathname === '/api/alipay/trade/query') {
+      return handleAlipayTradeQuery(req, env);
+    }
+    if (req.method === 'POST' && pathname === '/api/alipay/notify') {
+      return handleAlipayNotify(req, env);
     }
     // schedule
     if (req.method === 'GET' && pathname === '/api/schedule/list') {

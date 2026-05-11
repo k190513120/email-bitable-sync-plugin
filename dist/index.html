@@ -7,8 +7,8 @@
   <title>邮箱同步插件</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="./assets/index.5b9c2dd8.js"></script>
-  <link rel="stylesheet" href="./assets/index.d519c758.css">
+  <script type="module" crossorigin src="./assets/index.a0dd369e.js"></script>
+  <link rel="stylesheet" href="./assets/index.9bb5ce66.css">
 </head>
 <body>
   <main class="main">
@@ -238,6 +238,25 @@
 
     <footer class="footer-info" data-i18n="footer">© 2026 邮箱同步工具</footer>
   </main>
+
+  <!-- Alipay QR Code Modal -->
+  <div id="alipayQRModal" class="qr-modal-overlay" style="display: none;">
+    <div class="qr-modal">
+      <button id="alipayQRClose" class="qr-modal-close">&times;</button>
+      <div class="qr-modal-header">
+        <i class="fas fa-qrcode"></i>
+        <h3 data-i18n="alipay.title">支付宝扫码支付</h3>
+      </div>
+      <div class="qr-modal-body">
+        <img id="alipayQRImage" class="qr-code-image" alt="支付宝付款码" />
+        <p class="qr-modal-hint" data-i18n="alipay.hint">请使用支付宝扫描二维码完成支付</p>
+        <div class="qr-modal-status">
+          <i class="fas fa-spinner fa-spin"></i>
+          <span data-i18n="alipay.waiting">等待支付中...</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   
 </body>
