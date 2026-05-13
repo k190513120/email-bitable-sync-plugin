@@ -82,13 +82,13 @@
 
 ## 已知幽灵 / 历史包袱
 
-- **`email-bitable-sync-plugin.pages.dev`**：旧 Cloudflare Pages 项目，仍连着 GitHub main 自动部署，但用户实际访问 `emailsync.xiaomiao.win/`。Pages 上的版本是 4 月份的旧 dist，BASE_URL 还没切。**应归档**（删 Pages 项目或断开 git 集成）。
-- **Stripe webhook `we_1TCCv9...`**（指 wereadsync.xiaomiao.win）：见上文，应禁用。
+（暂无）2026-05-13 已清理：删除了 `email-bitable-sync-plugin` Pages 项目及其 custom domain `email.xiaomiao.win`、对应 DNS CNAME；禁用了 `we_1TCCv9...` 这条没人验签的 Stripe webhook。
 
 ---
 
 ## 改动记录
 
+- 2026-05-13: 清理 `email-bitable-sync-plugin` Pages 项目（含 custom domain `email.xiaomiao.win`、DNS CNAME `email.xiaomiao.win` → 删除）；Stripe webhook `we_1TCCv9...` 禁用。`email.xiaomiao.win` 现在返回 403（CF "no project here"），原来这里跑的是 4 月旧 dist 且 BASE_URL=wereadsync 已失效。
 - 2026-05-13: main 收纳 `chore/add-deploy-ci` 分支两个 commit（含支付宝当面付 + emailsync 域名 + Worker `[assets]` SPA 托管 + `.npmrc`）；新建本文档。
 - 2026-05-11: email worker 加 Alipay 当面付链路；切自定义域 `wereadsync.xiaomiao.win` → `emailsync.xiaomiao.win`；Stripe webhook endpoint `we_1TAqxc` URL 从 `email-sync-service.kelan656691.workers.dev` 改到 `emailsync.xiaomiao.win`。
 - 2026-05-11: 救火给 `190513120@qq.com` / `ou_a1a5df117f0854fddb7785b2ace0030b` 手动写入 entitlement（绕过 webhook 漂移期间丢失的 980 入账）。
