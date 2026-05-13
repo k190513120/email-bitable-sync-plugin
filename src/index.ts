@@ -1,12 +1,13 @@
 import $ from 'jquery';
+import QRCode from 'qrcode';
 import './index.scss';
 import { bitable } from '@lark-base-open/js-sdk';
 import { startEmailSync, checkEmailQuota, updateEmailUsage, fetchEmailFolders } from './email-api';
 import { prepareEmailTable, writeEmailRecords } from './email-table-operations';
-import { setLocale, applyI18n, t } from './i18n';
+import { setLocale, applyI18n, t, getLocale } from './i18n';
 
 // 所有 API 统一使用 Cloudflare Worker（cf-imap + Stripe）
-const BASE_URL = (import.meta.env.VITE_WORKER_BASE_URL as string) || 'https://wereadsync.xiaomiao.win';
+const BASE_URL = (import.meta.env.VITE_WORKER_BASE_URL as string) || 'https://emailsync.xiaomiao.win';
 
 let currentUserId = '';
 let currentUserPaid = false;
@@ -55,6 +56,16 @@ function bindEvents() {
   $('#enableSchedule').on('click', handleEnableSchedule);
   $('#upgradeBtn').on('click', handleUpgrade);
   $('#loadFolders').on('click', handleLoadFolders);
+  $('#alipayQRClose').on('click', () => {
+    alipayPollingActive = false;
+    $('#alipayQRModal').hide();
+  });
+}
+
+let alipayPollingActive = false;
+
+function shouldUseAlipay(): boolean {
+  return getLocale() === 'zh';
 }
 
 function getTableName(): string {
@@ -410,7 +421,30 @@ function updateScheduleLock() {
 
 async function handleUpgrade() {
   try {
-    const fallbackUrl = 'https://wereadsync.xiaomiao.win/healthz';
+    if (shouldUseAlipay()) {
+      if (!currentUserId) {
+        showResult(t('msg.getUserFailed'), 'error');
+        return;
+      }
+      const resp = await fetch(`${BASE_URL}/api/alipay/create-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUserId })
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => null);
+        throw new Error(errData?.message || `Request failed: ${resp.status}`);
+      }
+      const data = await resp.json();
+      if (data?.qrCode && data?.outTradeNo) {
+        await showAlipayQRModal(data.qrCode, data.outTradeNo);
+      } else {
+        showResult(t('msg.createCheckoutFailed'), 'error');
+      }
+      return;
+    }
+
+    const fallbackUrl = 'https://emailsync.xiaomiao.win/healthz';
     let currentUrl = fallbackUrl;
     try {
       const href = window.location.href;
@@ -438,6 +472,41 @@ async function handleUpgrade() {
     }
   } catch (error) {
     showResult(t('msg.upgradeFailed', { error: (error as Error).message }), 'error');
+  }
+}
+
+async function showAlipayQRModal(qrCodeUrl: string, outTradeNo: string): Promise<void> {
+  const dataUrl = await QRCode.toDataURL(qrCodeUrl, { width: 256, margin: 2 });
+  const modal = $('#alipayQRModal');
+  $('#alipayQRImage').attr('src', dataUrl);
+  modal.show();
+  alipayPollingActive = true;
+
+  let paid = false;
+  const maxPolls = 120;
+  for (let i = 0; i < maxPolls && alipayPollingActive; i++) {
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    if (!alipayPollingActive) break;
+    try {
+      const resp = await fetch(
+        `${BASE_URL}/api/alipay/trade/query?outTradeNo=${encodeURIComponent(outTradeNo)}`
+      );
+      const data = (await resp.json()) as { paid?: boolean };
+      if (data.paid) {
+        paid = true;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  alipayPollingActive = false;
+  modal.hide();
+
+  if (paid) {
+    showResult(t('alipay.success'), 'success');
+    await checkUserEntitlement();
+  } else {
+    showResult(t('alipay.cancelled'), 'info');
   }
 }
 

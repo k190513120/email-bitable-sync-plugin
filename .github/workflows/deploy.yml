@@ -1,0 +1,23 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'dist/**'
+      - 'public/**'
+      - '**.md'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 2e2b291e8f3e011ca7824f19bcb77236
+          command: deploy --config wrangler-email.toml

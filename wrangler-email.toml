@@ -4,8 +4,13 @@ compatibility_date = "2026-03-11"
 compatibility_flags = ["nodejs_compat"]
 
 routes = [
-  { pattern = "wereadsync.xiaomiao.win", custom_domain = true }
+  { pattern = "emailsync.xiaomiao.win", custom_domain = true }
 ]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
 
 [triggers]
 crons = ["0 * * * *"]
@@ -13,6 +18,8 @@ crons = ["0 * * * *"]
 [vars]
 STRIPE_PRODUCT_NAME = "邮箱同步飞书多维表格"
 STRIPE_PUBLISHABLE_KEY = "pk_live_51RnjToGcUZLGzSsVpGqXDJt4ZZvOdS0kAQnOwXdcAMRSvPQN2u6XNC3qBAtBcFScnzQeczJscofJVSSZm4rmJGSX008k4tQfUZ"
+ALIPAY_AMOUNT = "980.00"
+ALIPAY_SUBJECT = "邮箱同步飞书多维表格"
 
 [[kv_namespaces]]
 binding = "EMAIL_STATE"

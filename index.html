@@ -237,6 +237,25 @@
     <footer class="footer-info" data-i18n="footer">© 2026 邮箱同步工具</footer>
   </main>
 
+  <!-- Alipay QR Code Modal -->
+  <div id="alipayQRModal" class="qr-modal-overlay" style="display: none;">
+    <div class="qr-modal">
+      <button id="alipayQRClose" class="qr-modal-close">&times;</button>
+      <div class="qr-modal-header">
+        <i class="fas fa-qrcode"></i>
+        <h3 data-i18n="alipay.title">支付宝扫码支付</h3>
+      </div>
+      <div class="qr-modal-body">
+        <img id="alipayQRImage" class="qr-code-image" alt="支付宝付款码" />
+        <p class="qr-modal-hint" data-i18n="alipay.hint">请使用支付宝扫描二维码完成支付</p>
+        <div class="qr-modal-status">
+          <i class="fas fa-spinner fa-spin"></i>
+          <span data-i18n="alipay.waiting">等待支付中...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/src/index.ts"></script>
 </body>
 </html>
