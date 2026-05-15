@@ -24,3 +24,8 @@ ALIPAY_SUBJECT = "邮箱同步飞书多维表格"
 [[kv_namespaces]]
 binding = "EMAIL_STATE"
 id = "0f0d3c6453bf45daa1df06e90bca39b1"
+
+# service binding → bitable-billing-worker (Phase 1 dual-write integration)
+[[services]]
+binding = "BILLING"
+service = "billing-service"

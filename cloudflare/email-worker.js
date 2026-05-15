@@ -1285,6 +1285,21 @@ async function handleEmailSync(req, env) {
   }
 }
 
+async function queryBillingEntitlement(env, userId, email) {
+  if (!env.BILLING) return { active: false, entitlement: null };
+  try {
+    const params = new URLSearchParams({ productKey: 'email-sync' });
+    if (userId) params.set('userId', userId);
+    if (email)  params.set('email', email);
+    const resp = await env.BILLING.fetch(new Request(`https://billing/v1/entitlement?${params}`));
+    if (!resp.ok) return { active: false, entitlement: null };
+    const data = await resp.json();
+    return { active: !!data?.active, entitlement: data?.entitlement || null };
+  } catch (_) {
+    return { active: false, entitlement: null };
+  }
+}
+
 async function handleGetEntitlement(req, env) {
   const url = new URL(req.url);
   const userId = normalizeUserId(url.searchParams.get('userId'));
@@ -1292,14 +1307,20 @@ async function handleGetEntitlement(req, env) {
   if (!userId && !email) {
     return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 userId 参数' });
   }
-  const entitlement = userId ? await getEntitlementByUserId(env, userId) : await getEntitlementByEmail(env, email);
+  // dual-read: 本地 KV 是 phase-2-cutover 前的老数据；billing 是新真理
+  const localEnt = userId ? await getEntitlementByUserId(env, userId) : await getEntitlementByEmail(env, email);
+  const localActive = resolveEntitlementActive(localEnt);
+  const billingResult = await queryBillingEntitlement(env, userId, email);
+  const active = localActive || billingResult.active;
+  // 返回综合的 entitlement，优先 billing（新真理），fallback 到本地
+  const entitlement = billingResult.entitlement || localEnt;
   const usage = await getUsageByUserId(env, userId || '');
-  const active = resolveEntitlementActive(entitlement);
   const remainingFree = Math.max(0, FREE_EMAIL_QUOTA - usage.usedRecords);
   return jsonResponse(req, env, 200, {
     status: 'ok',
     entitlement: entitlement ? { ...entitlement, active } : { active: false, userId: userId || '', email: email || '', expiresAt: 0 },
-    freeQuota: { total: FREE_EMAIL_QUOTA, used: usage.usedRecords, remaining: remainingFree }
+    freeQuota: { total: FREE_EMAIL_QUOTA, used: usage.usedRecords, remaining: remainingFree },
+    sources: { local: localActive, billing: billingResult.active }
   });
 }
 
@@ -1309,29 +1330,42 @@ async function handleCreateCheckoutSession(req, env) {
   const cancelUrl = String(body?.cancelUrl || '').trim();
   const customerEmail = String(body?.customerEmail || '').trim();
   const userId = String(body?.userId || '').trim();
-  const productName = String(body?.productName || getStripeProductName(env)).trim();
   if (!successUrl || !cancelUrl) {
     return jsonResponse(req, env, 400, { status: 'failed', message: 'successUrl 和 cancelUrl 不能为空' });
   }
+  // Phase 1: 走 billing service binding。billing 内部按 productKey=email-sync 查 product:email-sync 拿 stripe price。
+  if (env.BILLING) {
+    try {
+      const billingResp = await env.BILLING.fetch(new Request('https://billing/v1/checkout/stripe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productKey: 'email-sync', userId, email: customerEmail, successUrl, cancelUrl })
+      }));
+      const data = await billingResp.json();
+      if (!billingResp.ok || data?.status !== 'ok') throw new Error(data?.message || `billing 拒绝: ${billingResp.status}`);
+      return jsonResponse(req, env, 200, { status: 'ok', url: data.checkoutUrl, sessionId: data.sessionId, publishableKey: getStripePublishableKey(env), via: 'billing' });
+    } catch (billingErr) {
+      // fallback to local (dual-write 期间防 billing 故障)
+      console.log('[checkout] billing failed, fallback to local:', billingErr?.message);
+    }
+  }
+  // legacy local path (kept for fallback during dual-write phase)
   try {
+    const productName = getStripeProductName(env);
     const resolved = await resolveStripePrice(env, productName);
     const mode = String(env.STRIPE_CHECKOUT_MODE || resolved.mode).trim();
     const checkoutParams = {
-      mode,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+      mode, success_url: successUrl, cancel_url: cancelUrl,
       'line_items[0][price]': resolved.priceId,
       'line_items[0][quantity]': '1',
       allow_promotion_codes: 'true',
       'metadata[user_id]': userId,
+      'metadata[product_key]': 'email-sync',
       'metadata[product_name]': productName
     };
-    if (customerEmail) {
-      checkoutParams.customer_email = customerEmail;
-      checkoutParams['metadata[customer_email]'] = customerEmail;
-    }
+    if (customerEmail) { checkoutParams.customer_email = customerEmail; checkoutParams['metadata[customer_email]'] = customerEmail; }
     const session = await stripeApiRequest(env, '/v1/checkout/sessions', checkoutParams);
-    return jsonResponse(req, env, 200, { status: 'ok', url: session?.url, sessionId: session?.id, publishableKey: getStripePublishableKey(env) });
+    return jsonResponse(req, env, 200, { status: 'ok', url: session?.url, sessionId: session?.id, publishableKey: getStripePublishableKey(env), via: 'local' });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: error?.message || '创建结算会话失败' });
   }
@@ -1651,8 +1685,24 @@ async function handleCreateAlipayOrder(req, env) {
     const body = (await req.json().catch(() => ({}))) || {};
     const userId = normalizeUserId(body?.userId);
     if (!userId) return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 userId' });
+    // Phase 1: route to billing via service binding (outTradeNo prefix BL)
+    if (env.BILLING) {
+      try {
+        const r = await env.BILLING.fetch(new Request('https://billing/v1/alipay/precreate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productKey: 'email-sync', userId })
+        }));
+        const d = await r.json();
+        if (!r.ok || d?.status !== 'ok') throw new Error(d?.message || `billing 拒绝: ${r.status}`);
+        return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: d.outTradeNo, qrCode: d.qrCode, via: 'billing' });
+      } catch (billingErr) {
+        console.log('[alipay precreate] billing failed, fallback to local:', billingErr?.message);
+      }
+    }
+    // legacy local path (outTradeNo prefix EM, kept for fallback)
     const order = await createAlipayPrecreateOrder(env, userId, req);
-    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode });
+    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode, via: 'local' });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: `创建支付宝订单失败：${error?.message || 'unknown error'}` });
   }
@@ -1662,6 +1712,17 @@ async function handleAlipayTradeQuery(req, env) {
   const url = new URL(req.url);
   const outTradeNo = String(url.searchParams.get('outTradeNo') || '').trim();
   if (!outTradeNo) return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 outTradeNo' });
+  // BL... 前缀 = billing 创建的订单，转 billing 查
+  if (outTradeNo.startsWith('BL') && env.BILLING) {
+    try {
+      const r = await env.BILLING.fetch(new Request(`https://billing/v1/alipay/query?outTradeNo=${encodeURIComponent(outTradeNo)}`));
+      const d = await r.json();
+      return jsonResponse(req, env, r.status, d);
+    } catch (e) {
+      return jsonResponse(req, env, 500, { status: 'failed', message: `billing 查询失败: ${e?.message}` });
+    }
+  }
+  // EM... 前缀 = 老订单仍走本地
   const tradeInfo = await getState(env, `email:pay:trade:${outTradeNo}`);
   if (!tradeInfo) return jsonResponse(req, env, 404, { status: 'failed', message: '订单不存在或已过期' });
   if (tradeInfo.status === 'TRADE_SUCCESS') {
