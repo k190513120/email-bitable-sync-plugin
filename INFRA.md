@@ -88,6 +88,7 @@
 
 ## 改动记录
 
+- 2026-05-15: 接入 `bitable-billing-worker`（service binding `BILLING`）。/api/stripe/create-checkout-session、/api/alipay/create-order 现在走 billing；/api/alipay/trade/query 按 outTradeNo 前缀路由（`BL` → billing，`EM` → 本地）；/api/stripe/entitlement dual-read 本地+billing。本地 Stripe webhook + Alipay notify 路由暂保留处理 in-flight 老订单。
 - 2026-05-13: 清理 `email-bitable-sync-plugin` Pages 项目（含 custom domain `email.xiaomiao.win`、DNS CNAME `email.xiaomiao.win` → 删除）；Stripe webhook `we_1TCCv9...` 禁用。`email.xiaomiao.win` 现在返回 403（CF "no project here"），原来这里跑的是 4 月旧 dist 且 BASE_URL=wereadsync 已失效。
 - 2026-05-13: main 收纳 `chore/add-deploy-ci` 分支两个 commit（含支付宝当面付 + emailsync 域名 + Worker `[assets]` SPA 托管 + `.npmrc`）；新建本文档。
 - 2026-05-11: email worker 加 Alipay 当面付链路；切自定义域 `wereadsync.xiaomiao.win` → `emailsync.xiaomiao.win`；Stripe webhook endpoint `we_1TAqxc` URL 从 `email-sync-service.kelan656691.workers.dev` 改到 `emailsync.xiaomiao.win`。
