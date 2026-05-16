@@ -1540,9 +1540,10 @@ async function handleScheduleStatus(req, env) {
     }
     const schedule = await getSchedule(env, id);
     if (!schedule) {
-      return jsonResponse(req, env, 200, { exists: false });
+      return jsonResponse(req, env, 404, { status: 'failed', message: 'schedule 不存在', exists: false });
     }
     return jsonResponse(req, env, 200, {
+      status: 'ok',
       exists: true,
       id: schedule.id,
       enabled: schedule.enabled,
