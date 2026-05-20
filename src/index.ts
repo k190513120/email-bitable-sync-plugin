@@ -42,7 +42,7 @@ async function initializeApp() {
 }
 
 function setDefaultConfig() {
-  $('#provider').val('gmail');
+  setProviderValue('gmail');
   $('#maxMessages').val('100');
   $('#imapHost').val('imap.gmail.com');
   $('#imapPort').val('993');
@@ -393,6 +393,47 @@ function hideProgress() {
 
 $('#provider').on('change', function handleProviderChange() {
   applyProviderPreset(String($(this).val() || ''));
+});
+
+// Custom dropdown for provider (替换原生 select，飞书 webview 兼容)
+function setProviderValue(value: string) {
+  const $option = $(`#providerPanel .dropdown-option[data-value="${value}"]`);
+  if (!$option.length || $option.prop('disabled')) return;
+  $('#provider').val(value);
+  $('#providerLabel').text(String($option.text() || ''));
+  $('#providerPanel .dropdown-option').removeClass('is-selected');
+  $option.addClass('is-selected');
+  $('#provider').trigger('change');
+}
+
+function closeProviderPanel() {
+  $('#providerPanel').prop('hidden', true);
+  $('#providerTrigger').attr('aria-expanded', 'false');
+}
+
+$('#providerTrigger').on('click', (e) => {
+  e.stopPropagation();
+  const $panel = $('#providerPanel');
+  const willOpen = !!$panel.prop('hidden');
+  $panel.prop('hidden', !willOpen);
+  $('#providerTrigger').attr('aria-expanded', String(willOpen));
+});
+
+$('#providerPanel').on('click', '.dropdown-option', function (e) {
+  e.stopPropagation();
+  if ($(this).prop('disabled')) return;
+  setProviderValue(String($(this).attr('data-value') || ''));
+  closeProviderPanel();
+});
+
+$(document).on('click', () => closeProviderPanel());
+$(document).on('keydown', (e) => {
+  if (e.key === 'Escape') closeProviderPanel();
+});
+
+// Sync initial label / selection state on load
+$(() => {
+  setProviderValue(String($('#provider').val() || 'gmail'));
 });
 
 // --- Entitlement / Paywall ---

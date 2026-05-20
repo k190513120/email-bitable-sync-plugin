@@ -195,6 +195,93 @@ textarea.config-input {
   color: #7b8599;
 }
 
+/* ── Custom dropdown (替换原生 select，飞书 webview 兼容) ──── */
+.dropdown {
+  position: relative;
+}
+
+.dropdown-trigger {
+  width: 100%;
+  cursor: pointer;
+  color: #fff;
+  font-size: 13px;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(0deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03));
+  font-family: inherit;
+  transition: border-color 0.12s;
+
+  &[aria-expanded='true'] {
+    border-color: rgba(79, 142, 255, 0.55);
+  }
+
+  .dropdown-value {
+    flex: 1;
+    min-width: 0;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dropdown-caret {
+    color: #7f8a9f;
+    font-size: 11px;
+    transition: transform 0.18s ease;
+  }
+
+  &[aria-expanded='true'] .dropdown-caret {
+    transform: rotate(180deg);
+  }
+}
+
+.dropdown-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #1a1a22;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+
+  &[hidden] { display: none; }
+}
+
+.dropdown-option {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  color: #e8eefb;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+
+  &:hover:not(:disabled) {
+    background: rgba(79, 142, 255, 0.18);
+  }
+
+  &.is-selected {
+    background: rgba(79, 142, 255, 0.22);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  &:disabled {
+    color: #6b7280;
+    cursor: not-allowed;
+  }
+}
+
 .split-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;

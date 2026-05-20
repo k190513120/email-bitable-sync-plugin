@@ -34,17 +34,22 @@
       <div class="card-content">
         <div class="form-item">
           <label for="provider" data-i18n="label.provider">邮箱服务商</label>
-          <div class="field-shell">
-            <i class="fas fa-server"></i>
-            <select id="provider" class="config-input">
-              <option value="gmail" data-i18n="provider.gmail">Gmail</option>
-              <option value="qq" data-i18n="provider.qq">QQ 邮箱</option>
-              <option value="feishu" data-i18n="provider.feishu">飞书邮箱</option>
-              <option value="163" data-i18n="provider.163">163 邮箱</option>
-              <option value="yahoo" data-i18n="provider.yahoo">Yahoo 邮箱</option>
-              <option value="outlook" disabled data-i18n="provider.outlook">Outlook（暂不支持，需 OAuth2）</option>
-              <option value="custom" data-i18n="provider.custom">自定义</option>
-            </select>
+          <div class="dropdown" id="providerDropdown">
+            <button type="button" class="dropdown-trigger field-shell" id="providerTrigger" aria-haspopup="listbox" aria-expanded="false">
+              <i class="fas fa-server"></i>
+              <span class="dropdown-value" id="providerLabel" data-i18n="provider.gmail">Gmail</span>
+              <i class="fas fa-chevron-down dropdown-caret"></i>
+            </button>
+            <div class="dropdown-panel" id="providerPanel" role="listbox" hidden>
+              <button type="button" class="dropdown-option" role="option" data-value="gmail" data-i18n="provider.gmail">Gmail</button>
+              <button type="button" class="dropdown-option" role="option" data-value="qq" data-i18n="provider.qq">QQ 邮箱</button>
+              <button type="button" class="dropdown-option" role="option" data-value="feishu" data-i18n="provider.feishu">飞书邮箱</button>
+              <button type="button" class="dropdown-option" role="option" data-value="163" data-i18n="provider.163">163 邮箱</button>
+              <button type="button" class="dropdown-option" role="option" data-value="yahoo" data-i18n="provider.yahoo">Yahoo 邮箱</button>
+              <button type="button" class="dropdown-option" role="option" data-value="outlook" disabled data-i18n="provider.outlook">Outlook（暂不支持，需 OAuth2）</button>
+              <button type="button" class="dropdown-option" role="option" data-value="custom" data-i18n="provider.custom">自定义</button>
+            </div>
+            <input id="provider" type="hidden" value="gmail" />
           </div>
           <div id="providerHint" class="provider-hint" style="display:none;"></div>
         </div>
