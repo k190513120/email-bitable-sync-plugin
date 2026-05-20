@@ -1678,7 +1678,7 @@ async function createAlipayPrecreateOrder(env, userId, req) {
     { userId, amount, subject, status: 'WAIT_BUYER_PAY', qrCode: result.qr_code, createdAt: Date.now() },
     60 * 60 * 24
   );
-  return { outTradeNo, qrCode: result.qr_code };
+  return { outTradeNo, qrCode: result.qr_code, product: { name: subject, subject, cnyAmount: amount, durationDays: 365 } };
 }
 
 async function handleCreateAlipayOrder(req, env) {
@@ -1696,14 +1696,14 @@ async function handleCreateAlipayOrder(req, env) {
         }));
         const d = await r.json();
         if (!r.ok || d?.status !== 'ok') throw new Error(d?.message || `billing 拒绝: ${r.status}`);
-        return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: d.outTradeNo, qrCode: d.qrCode, via: 'billing' });
+        return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: d.outTradeNo, qrCode: d.qrCode, product: d.product, via: 'billing' });
       } catch (billingErr) {
         console.log('[alipay precreate] billing failed, fallback to local:', billingErr?.message);
       }
     }
     // legacy local path (outTradeNo prefix EM, kept for fallback)
     const order = await createAlipayPrecreateOrder(env, userId, req);
-    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode, via: 'local' });
+    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode, product: order.product, via: 'local' });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: `创建支付宝订单失败：${error?.message || 'unknown error'}` });
   }

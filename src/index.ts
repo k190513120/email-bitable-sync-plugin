@@ -478,7 +478,7 @@ async function handleUpgrade() {
       }
       const data = await resp.json();
       if (data?.qrCode && data?.outTradeNo) {
-        await showAlipayQRModal(data.qrCode, data.outTradeNo);
+        await showAlipayQRModal(data.qrCode, data.outTradeNo, data.product);
       } else {
         showResult(t('msg.createCheckoutFailed'), 'error');
       }
@@ -516,10 +516,58 @@ async function handleUpgrade() {
   }
 }
 
-async function showAlipayQRModal(qrCodeUrl: string, outTradeNo: string): Promise<void> {
+interface AlipayProductInfo {
+  name?: string;
+  subject?: string;
+  cnyAmount?: string;
+  durationDays?: number;
+}
+
+function formatYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}.${m}.${d}`;
+}
+
+async function showAlipayQRModal(
+  qrCodeUrl: string,
+  outTradeNo: string,
+  product?: AlipayProductInfo
+): Promise<void> {
   const dataUrl = await QRCode.toDataURL(qrCodeUrl, { width: 256, margin: 2 });
   const modal = $('#alipayQRModal');
   $('#alipayQRImage').attr('src', dataUrl);
+
+  // Render product info (plan name / amount / period)
+  const planName = product?.name || product?.subject || t('alipay.planName');
+  $('#alipayPlanName').text(planName);
+
+  const durationDays = Number(product?.durationDays) || 365;
+  const durationLabel = durationDays >= 365
+    ? t('alipay.durationYears', { years: Math.round(durationDays / 365) })
+    : t('alipay.durationDays', { days: durationDays });
+  $('#alipayPlanDuration').html(`<i class="fas fa-calendar"></i><span>${durationLabel}</span>`);
+
+  const start = new Date();
+  const end = new Date(start.getTime() + durationDays * 24 * 60 * 60 * 1000);
+  $('#alipayPlanPeriod').html(
+    `<i class="fas fa-clock"></i><span>${formatYmd(start)} — ${formatYmd(end)}</span>`
+  );
+
+  const amount = product?.cnyAmount || '';
+  if (amount) {
+    $('#alipayAmount').html(
+      `<span class="alipay-amount-value">¥${amount}</span><span class="alipay-amount-unit"> / ${t('alipay.duration')}</span>`
+    );
+  } else {
+    $('#alipayAmount').empty();
+  }
+
+  // Reset status text (in case it was previously set to success)
+  $('#alipayStatus').removeClass('alipay-status-success').text(t('alipay.hint'));
+  $('#alipayWaiting').show();
+
   modal.show();
   alipayPollingActive = true;
 
@@ -541,12 +589,14 @@ async function showAlipayQRModal(qrCodeUrl: string, outTradeNo: string): Promise
   }
 
   alipayPollingActive = false;
-  modal.hide();
 
   if (paid) {
-    showResult(t('alipay.success'), 'success');
+    $('#alipayStatus').addClass('alipay-status-success').text(t('alipay.success'));
+    $('#alipayWaiting').hide();
     await checkUserEntitlement();
+    setTimeout(() => modal.hide(), 1500);
   } else {
+    modal.hide();
     showResult(t('alipay.cancelled'), 'info');
   }
 }
