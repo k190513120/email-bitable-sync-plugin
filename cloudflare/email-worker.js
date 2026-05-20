@@ -207,6 +207,64 @@ function resolveImapConfig(body) {
   };
 }
 
+// ─── IMAP modified UTF-7 (RFC 3501) encoder / decoder ────
+// 中文/Unicode 文件夹名经 modified UTF-7 编码后形如 &XfJfUmhj-（"已发送"等）
+function decodeImapUtf7(s) {
+  if (!s || typeof s !== 'string') return s;
+  return s.replace(/&([^-]*)-/g, (_, encoded) => {
+    if (encoded === '') return '&';
+    // modified base64: "," → "/"，按 4 字节补 padding
+    const b64 = encoded.replace(/,/g, '/');
+    const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+    let bin;
+    try { bin = atob(padded); } catch (_) { return `&${encoded}-`; }
+    let out = '';
+    for (let i = 0; i + 1 < bin.length; i += 2) {
+      out += String.fromCharCode((bin.charCodeAt(i) << 8) | bin.charCodeAt(i + 1));
+    }
+    return out;
+  });
+}
+
+// 把含非 ASCII 字符的文件夹名重编为 modified UTF-7（用于 SELECT 等命令）
+// 已含 modified UTF-7 转义序列的字符串直接返回，避免双重编码
+function encodeImapUtf7(s) {
+  if (!s || typeof s !== 'string') return s;
+  // 全 ASCII 且不含 '&' → 直接返回
+  if (/^[\x20-\x25\x27-\x7e]*$/.test(s)) return s;
+  // 已含 modified UTF-7 转义（&...-）的，先解码再重编，幂等
+  const decoded = decodeImapUtf7(s);
+  let out = '';
+  let buf = '';
+  const flush = () => {
+    if (!buf) return;
+    // 把每个 char → UTF-16 大端字节
+    const bytes = [];
+    for (let i = 0; i < buf.length; i++) {
+      const code = buf.charCodeAt(i);
+      bytes.push((code >> 8) & 0xff, code & 0xff);
+    }
+    const bin = String.fromCharCode(...bytes);
+    const b64 = btoa(bin).replace(/=+$/, '').replace(/\//g, ',');
+    out += `&${b64}-`;
+    buf = '';
+  };
+  for (const ch of decoded) {
+    const code = ch.charCodeAt(0);
+    if (code === 0x26) { // '&'
+      flush();
+      out += '&-';
+    } else if (code >= 0x20 && code <= 0x7e) {
+      flush();
+      out += ch;
+    } else {
+      buf += ch;
+    }
+  }
+  flush();
+  return out;
+}
+
 // ─── Workers 原生 IMAP 客户端 (cloudflare:sockets) ──────
 
 class WorkersImapClient {
@@ -280,10 +338,10 @@ class WorkersImapClient {
       const m = line.match(/^\*\s+LIST\s+\(([^)]*)\)\s+"([^"]*)"\s+(?:"([^"]+)"|(\S+))/i);
       if (m) {
         const flags = m[1] || '';
-        const name = m[3] || m[4];
+        const rawName = m[3] || m[4];
         // 跳过不可选择的文件夹
         if (/\\Noselect/i.test(flags)) continue;
-        if (name) folders.push(name);
+        if (rawName) folders.push(decodeImapUtf7(rawName));
       }
     }
     return folders;
@@ -291,7 +349,9 @@ class WorkersImapClient {
 
   async select(folder) {
     const tag = this.nextTag();
-    await this._send(`${tag} SELECT "${this._escape(folder)}"\r\n`);
+    // 非 ASCII 文件夹名（中文等）按 IMAP modified UTF-7 重编后再发送
+    const wireName = encodeImapUtf7(folder);
+    await this._send(`${tag} SELECT "${this._escape(wireName)}"\r\n`);
     const resp = await this._readUntilTag(tag);
     if (!resp.tagged.toUpperCase().includes(`${tag} OK`)) {
       throw new Error(`选择邮箱 ${folder} 失败: ${resp.tagged}`);
@@ -1796,9 +1856,17 @@ export default {
     }
     // list IMAP folders
     if (req.method === 'POST' && pathname === '/api/email/folders') {
+      const body = (await req.json().catch(() => ({}))) || {};
+      let config;
       try {
-        const body = (await req.json().catch(() => ({}))) || {};
-        const config = resolveImapConfig(body);
+        config = resolveImapConfig(body);
+      } catch (error) {
+        return jsonResponse(req, env, 400, { status: 'failed', message: error?.message || '配置无效' });
+      }
+      // 重试 3 次：IMAP 服务器（QQ/163）有时拒短链重连，单次失败属正常抖动
+      const maxAttempts = 3;
+      let lastError = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         const client = new WorkersImapClient(
           config.connection.host,
           config.connection.port,
@@ -1807,14 +1875,24 @@ export default {
           config.auth.pass,
           config.provider
         );
-        await client.connect();
-        await client.login();
-        const folders = await client.listFolders();
-        await client.logout();
-        return jsonResponse(req, env, 200, { status: 'ok', folders });
-      } catch (error) {
-        return jsonResponse(req, env, 500, { status: 'failed', message: error?.message || '获取文件夹列表失败' });
+        try {
+          await client.connect();
+          await client.login();
+          const folders = await client.listFolders();
+          try { await client.logout(); } catch (_) {}
+          return jsonResponse(req, env, 200, { status: 'ok', folders });
+        } catch (error) {
+          lastError = error;
+          try { await client.logout(); } catch (_) {}
+          const msg = String(error?.message || '');
+          // 鉴权 / 配置类错误不重试
+          if (/登录失败|授权|authentication|password|invalid|配置|无效/i.test(msg)) break;
+          if (attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+          }
+        }
       }
+      return jsonResponse(req, env, 500, { status: 'failed', message: lastError?.message || '获取文件夹列表失败' });
     }
     // email sync
     if (req.method === 'POST' && pathname === '/api/email/sync') {
