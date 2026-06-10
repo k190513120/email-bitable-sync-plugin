@@ -1326,6 +1326,22 @@ async function pushUserCredit(env, userId, outTradeNo) {
   }
 }
 
+// Put a claimed-but-not-yet-consumed credit back at the head of the index when
+// the downstream op (schedule creation) fails — otherwise the paid credit is
+// silently lost.
+async function restoreUserCredit(env, userId, outTradeNo) {
+  if (!userId || !outTradeNo) return;
+  try {
+    const idx = await loadUserCredits(env, userId);
+    if (!idx.tradeNos.includes(outTradeNo)) {
+      idx.tradeNos.unshift(outTradeNo);
+      await saveUserCredits(env, userId, idx.tradeNos);
+    }
+  } catch (_) {
+    /* best effort */
+  }
+}
+
 async function claimUserCredit(env, userId) {
   if (!userId) return null;
   const idx = await loadUserCredits(env, userId);
@@ -1688,7 +1704,13 @@ async function handleScheduleCreate(req, env) {
       paidUntil: creditPaidUntil
     };
 
-    await putSchedule(env, schedule);
+    try {
+      await putSchedule(env, schedule);
+    } catch (e) {
+      // Schedule didn't persist → give the claimed credit back, don't lose it.
+      if (creditOutTradeNo) await restoreUserCredit(env, userId, creditOutTradeNo);
+      throw e;
+    }
 
     if (creditRecord) {
       creditRecord.consumed = true;
