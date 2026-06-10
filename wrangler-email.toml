@@ -18,7 +18,7 @@ crons = ["0 * * * *"]
 [vars]
 STRIPE_PRODUCT_NAME = "邮箱同步飞书多维表格"
 STRIPE_PUBLISHABLE_KEY = "pk_live_51RnjToGcUZLGzSsVpGqXDJt4ZZvOdS0kAQnOwXdcAMRSvPQN2u6XNC3qBAtBcFScnzQeczJscofJVSSZm4rmJGSX008k4tQfUZ"
-ALIPAY_AMOUNT = "980.00"
+ALIPAY_AMOUNT = "499.00"
 ALIPAY_SUBJECT = "邮箱同步飞书多维表格"
 
 [[kv_namespaces]]

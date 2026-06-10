@@ -1,7 +1,9 @@
 {
   "title": "Email Sync Plugin",
   "brand.email": "Email",
-  "brand.bitable": "Feishu Bitable",
+  "brand.bitable": "Bitable",
+  "brand.app": "Email Sync",
+  "brand.tagline": "Inbox into",
   "eyebrow": "BITABLE PLUGIN",
   "syncProgress": "Sync Progress",
   "description": "Connect Gmail, QQ, Feishu, 163, Yahoo mailboxes and sync to Bitable.",

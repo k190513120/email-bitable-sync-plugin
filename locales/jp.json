@@ -1,7 +1,9 @@
 {
   "title": "メール同期プラグイン",
   "brand.email": "メール",
-  "brand.bitable": "Feishu 多次元テーブル",
+  "brand.bitable": "Bitable",
+  "brand.app": "メール同期",
+  "brand.tagline": "受信箱を取り込む先：",
   "eyebrow": "BITABLE プラグイン",
   "syncProgress": "同期の進捗",
   "description": "Gmail、QQ、Feishu、163、Yahoo メールボックスを多次元テーブルに同期します。",

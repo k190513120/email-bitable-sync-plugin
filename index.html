@@ -6,237 +6,420 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>邮箱同步插件</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
   <main class="main">
-    <section class="brand-bar">
+    <header class="brand-bar">
+      <span class="brand-icon"><i class="fas fa-envelope"></i></span>
       <div class="brand-item">
-        <span class="brand-icon"><i class="fas fa-envelope"></i></span>
-        <span class="brand-name" data-i18n="brand.email">邮箱</span>
+        <span class="brand-name" data-i18n="brand.app">邮箱同步</span>
+        <span class="brand-tagline">
+          <span data-i18n="brand.tagline">把收件箱写进</span>
+          <span class="brand-tagline-strong" data-i18n="brand.bitable">多维表格</span>
+        </span>
       </div>
-      <span class="brand-arrow"><i class="fas fa-arrow-right"></i></span>
-      <div class="brand-item">
-        <span class="brand-icon brand-icon-blue"><i class="fas fa-cubes"></i></span>
-        <span class="brand-name" data-i18n="brand.bitable">飞书多维表格</span>
-      </div>
-    </section>
+      <button type="button" class="uid-chip" id="uidChip" style="display:none"></button>
+    </header>
 
-    <section class="feature-card">
-      <div class="card-header">
-        <div class="card-title-section">
-          <div class="eyebrow"><i class="fas fa-rotate"></i><span data-i18n="eyebrow">BITABLE 插件</span></div>
-          <h1 class="card-title" data-i18n="syncProgress">同步进度</h1>
-          <p class="card-description" data-i18n="description">连接 Gmail、QQ、飞书、163、Yahoo 邮箱并同步到多维表格。</p>
+    <nav class="tab-bar" role="tablist">
+      <button class="tab-btn is-active" type="button" role="tab" data-tab="setup" aria-selected="true">
+        <i class="fas fa-sliders"></i><span data-i18n="tab.setup">配置</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab="sync" aria-selected="false">
+        <i class="fas fa-rotate"></i><span data-i18n="tab.sync">同步</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab="schedule" aria-selected="false">
+        <i class="fas fa-clock"></i><span data-i18n="tab.schedule">定时</span>
+      </button>
+      <button class="tab-btn" type="button" role="tab" data-tab="upgrade" aria-selected="false" hidden>
+        <i class="fas fa-sparkles"></i><span data-i18n="tab.upgrade">升级</span>
+      </button>
+    </nav>
+
+    <!-- ─── Setup tab ─────────────────────────────────────── -->
+    <section class="tab-pane is-active" data-pane="setup">
+      <div class="soft-card">
+        <header class="soft-section-title">
+          <span class="soft-step-num">1</span>
+          <h2 data-i18n="setup.connect">连接邮箱</h2>
+          <span class="soft-section-hint" data-i18n="setup.connectHint">支持 IMAP 授权码</span>
+        </header>
+
+        <div class="provider-tiles" id="providerTiles">
+          <button type="button" class="provider-tile is-active" data-provider="gmail">
+            <span class="provider-mono" style="background:#E8543A">G</span>
+            <span class="provider-label">Gmail</span>
+          </button>
+          <button type="button" class="provider-tile" data-provider="qq">
+            <span class="provider-mono" style="background:#2980EA">Q</span>
+            <span class="provider-label">QQ</span>
+          </button>
+          <button type="button" class="provider-tile" data-provider="feishu">
+            <span class="provider-mono" style="background:#3370FF">F</span>
+            <span class="provider-label" data-i18n="provider.feishuShort">飞书</span>
+          </button>
+          <button type="button" class="provider-tile" data-provider="163">
+            <span class="provider-mono" style="background:#E54545">网</span>
+            <span class="provider-label">163</span>
+          </button>
+          <button type="button" class="provider-tile" data-provider="yahoo">
+            <span class="provider-mono" style="background:#6001D2">Y</span>
+            <span class="provider-label">Yahoo</span>
+          </button>
+          <button type="button" class="provider-tile" data-provider="custom">
+            <span class="provider-mono" style="background:#5C5C5C">⋯</span>
+            <span class="provider-label" data-i18n="provider.customShort">自定义</span>
+          </button>
         </div>
-      </div>
+        <input id="provider" type="hidden" value="gmail" />
+        <div id="providerHint" class="provider-hint" style="display:none;"></div>
 
-      <div class="card-content">
-        <div class="form-item">
-          <label for="provider" data-i18n="label.provider">邮箱服务商</label>
-          <div class="dropdown" id="providerDropdown">
-            <button type="button" class="dropdown-trigger field-shell" id="providerTrigger" aria-haspopup="listbox" aria-expanded="false">
-              <i class="fas fa-server"></i>
-              <span class="dropdown-value" id="providerLabel" data-i18n="provider.gmail">Gmail</span>
-              <i class="fas fa-chevron-down dropdown-caret"></i>
-            </button>
-            <div class="dropdown-panel" id="providerPanel" role="listbox" hidden>
-              <button type="button" class="dropdown-option" role="option" data-value="gmail" data-i18n="provider.gmail">Gmail</button>
-              <button type="button" class="dropdown-option" role="option" data-value="qq" data-i18n="provider.qq">QQ 邮箱</button>
-              <button type="button" class="dropdown-option" role="option" data-value="feishu" data-i18n="provider.feishu">飞书邮箱</button>
-              <button type="button" class="dropdown-option" role="option" data-value="163" data-i18n="provider.163">163 邮箱</button>
-              <button type="button" class="dropdown-option" role="option" data-value="yahoo" data-i18n="provider.yahoo">Yahoo 邮箱</button>
-              <button type="button" class="dropdown-option" role="option" data-value="outlook" disabled data-i18n="provider.outlook">Outlook（暂不支持，需 OAuth2）</button>
-              <button type="button" class="dropdown-option" role="option" data-value="custom" data-i18n="provider.custom">自定义</button>
-            </div>
-            <input id="provider" type="hidden" value="gmail" />
-          </div>
-          <div id="providerHint" class="provider-hint" style="display:none;"></div>
-        </div>
-
-        <div class="split-fields">
-          <div class="form-item">
-            <label for="email" data-i18n="label.email">邮箱账号</label>
-            <div class="field-shell">
-              <i class="fas fa-user"></i>
-              <input id="email" class="config-input" data-i18n-placeholder="placeholder.email" placeholder="name@example.com" />
-            </div>
-          </div>
-          <div class="form-item">
-            <label for="password" data-i18n="label.password">邮箱授权码/密码</label>
-            <div class="field-shell">
-              <i class="fas fa-key"></i>
-              <input id="password" type="password" class="config-input" data-i18n-placeholder="placeholder.password" placeholder="建议使用授权码" />
-            </div>
-          </div>
-        </div>
-
-        <div class="split-fields">
-          <div class="form-item">
-            <label for="imapHost" data-i18n="label.imapHost">IMAP Host</label>
-            <div class="field-shell">
-              <i class="fas fa-globe"></i>
-              <input id="imapHost" class="config-input" data-i18n-placeholder="placeholder.imapHost" placeholder="imap.gmail.com" />
-            </div>
-          </div>
-          <div class="form-item">
-            <label for="imapPort" data-i18n="label.imapPort">IMAP Port</label>
-            <div class="field-shell">
-              <i class="fas fa-plug"></i>
-              <input id="imapPort" class="config-input" type="number" min="1" max="65535" placeholder="993" />
-            </div>
-          </div>
-        </div>
-
-        <div class="form-item">
-          <label data-i18n="label.folder">同步文件夹</label>
-          <div class="folder-row">
-            <div class="field-shell folder-input-shell">
-              <i class="fas fa-inbox"></i>
-              <input id="folder" class="config-input" placeholder="INBOX" />
-            </div>
-            <button id="loadFolders" type="button" class="load-folders-btn" data-i18n-title="btn.loadFolders">
-              <i class="fas fa-folder-open"></i> <span data-i18n="btn.loadFolders">获取文件夹</span>
-            </button>
-          </div>
-          <div id="folderCheckboxes" class="folder-checkboxes" style="display:none;"></div>
-        </div>
-
-        <div class="form-item">
-          <label for="maxMessages" data-i18n="label.maxMessages">每个文件夹同步邮件数</label>
+        <div class="soft-field-stack">
           <div class="field-shell">
-            <i class="fas fa-list-ol"></i>
-            <input id="maxMessages" class="config-input" type="number" min="1" max="500" placeholder="100" />
+            <i class="fas fa-envelope"></i>
+            <input id="email" class="config-input" data-i18n-placeholder="placeholder.email" placeholder="name@example.com" />
           </div>
-        </div>
-
-        <div class="form-item">
-          <label for="tableName" data-i18n="label.tableName">目标数据表</label>
           <div class="field-shell">
-            <i class="fas fa-table"></i>
-            <input id="tableName" class="config-input" data-i18n-placeholder="placeholder.tableName" placeholder="邮箱同步" />
+            <i class="fas fa-key"></i>
+            <input id="password" type="password" class="config-input" data-i18n-placeholder="placeholder.password" placeholder="授权码" />
+            <span class="field-suffix" data-i18n="placeholder.passwordSuffix">授权码</span>
           </div>
         </div>
 
-        <div class="form-item">
-          <label for="secure">
+        <details class="advanced-toggle" id="imapAdvanced">
+          <summary>
+            <span data-i18n="setup.advanced">高级设置</span>
+            <i class="fas fa-chevron-down"></i>
+          </summary>
+          <div class="split-fields">
+            <div class="form-item">
+              <label for="imapHost" data-i18n="label.imapHost">IMAP Host</label>
+              <div class="field-shell">
+                <i class="fas fa-globe"></i>
+                <input id="imapHost" class="config-input" placeholder="imap.gmail.com" />
+              </div>
+            </div>
+            <div class="form-item">
+              <label for="imapPort" data-i18n="label.imapPort">IMAP Port</label>
+              <div class="field-shell">
+                <i class="fas fa-plug"></i>
+                <input id="imapPort" class="config-input" type="number" min="1" max="65535" placeholder="993" />
+              </div>
+            </div>
+          </div>
+          <label class="checkbox-row">
             <input id="secure" type="checkbox" checked />
             <span data-i18n="label.enableSSL">启用 SSL/TLS</span>
           </label>
-        </div>
+        </details>
+      </div>
 
-        <button id="startSync" class="main-action-btn">
-          <div class="btn-content">
-            <i class="fas fa-rotate btn-icon"></i>
-            <span id="syncBtnText" class="btn-text" data-i18n="btn.sync">确认并同步</span>
-            <div id="syncLoadingSpinner" class="loading-spinner" style="display: none;">
-              <i class="fas fa-spinner fa-spin"></i>
+      <div class="soft-card">
+        <header class="soft-section-title">
+          <span class="soft-step-num">2</span>
+          <h2 data-i18n="setup.folders">选择要同步的文件夹</h2>
+          <span class="soft-section-hint" id="folderHint" data-i18n="setup.foldersHint">点击右侧获取文件夹</span>
+        </header>
+
+        <div class="folder-row">
+          <div class="field-shell folder-input-shell">
+            <i class="fas fa-inbox"></i>
+            <input id="folder" class="config-input" placeholder="INBOX" />
+          </div>
+          <button id="loadFolders" type="button" class="load-folders-btn" data-i18n-title="btn.loadFolders">
+            <i class="fas fa-folder-open"></i> <span data-i18n="btn.loadFolders">获取</span>
+          </button>
+        </div>
+        <div id="folderCheckboxes" class="folder-checkboxes" style="display:none;"></div>
+
+        <div class="split-fields">
+          <div class="form-item">
+            <label for="maxMessages" data-i18n="label.maxMessages">每文件夹上限</label>
+            <div class="field-shell">
+              <i class="fas fa-list-ol"></i>
+              <input id="maxMessages" class="config-input" type="number" min="1" max="500" placeholder="100" />
+              <span class="field-suffix" data-i18n="setup.maxUnit">封</span>
             </div>
           </div>
-        </button>
-
-        <div id="syncProgressContainer" class="progress-section" style="display: none;">
-          <div class="progress-header">
-            <span class="progress-label" data-i18n="progress.syncing">正在同步到飞书</span>
-            <span id="syncProgressValue" class="progress-percentage">0%</span>
-          </div>
-          <div class="progress-bar-container">
-            <div id="syncProgressBar" class="progress-bar-fill" style="width: 0%"></div>
-          </div>
-          <div id="syncProgressText" class="progress-text" data-i18n="progress.preparing">准备开始同步...</div>
-          <div class="sync-meta">
-            <span><i class="fas fa-lock"></i> <span data-i18n="progress.encrypted">已加密</span></span>
-            <span><i class="fas fa-clock-rotate-left"></i> <span data-i18n="progress.justSynced">刚刚同步</span></span>
+          <div class="form-item">
+            <label for="tableName" data-i18n="label.tableName">目标数据表</label>
+            <div class="field-shell">
+              <i class="fas fa-table"></i>
+              <input id="tableName" class="config-input" data-i18n-placeholder="placeholder.tableName" placeholder="邮箱同步" />
+            </div>
           </div>
         </div>
+      </div>
 
-        <div id="resultContainer" class="result-section" style="display: none;">
-          <div id="resultMessage" class="result-message"></div>
-        </div>
+      <div class="quota-row">
+        <span class="quota-row-left">
+          <i class="fas fa-shield-halved"></i>
+          <span data-i18n="setup.secNote">授权码本地保存 · TLS 加密</span>
+        </span>
+        <span id="quotaChip" class="quota-chip">
+          <span id="quotaText" class="quota-text">— / —</span>
+          <span data-i18n="setup.quotaSuffix">行 · 免费版</span>
+        </span>
+      </div>
+
+      <button id="startSync" class="main-action-btn">
+        <span class="btn-content">
+          <i class="fas fa-sparkles btn-icon"></i>
+          <span id="syncBtnText" class="btn-text" data-i18n="btn.sync">确认并同步</span>
+          <span id="syncLoadingSpinner" class="loading-spinner" style="display: none;">
+            <i class="fas fa-spinner fa-spin"></i>
+          </span>
+        </span>
+      </button>
+
+      <div id="resultContainer" class="result-section" style="display: none;">
+        <div id="resultMessage" class="result-message"></div>
       </div>
     </section>
 
-    <section class="schedule-card">
-      <div class="card-header">
-        <div class="card-title-section">
-          <div class="eyebrow"><i class="fas fa-clock"></i><span data-i18n="schedule.title">后台定时同步</span></div>
-          <h2 class="card-title" data-i18n="schedule.subtitle">定时同步设置</h2>
-          <p class="card-description" data-i18n="schedule.description">支持多个邮箱同时定时同步，包括附件。关闭插件后服务器也会自动同步。</p>
-        </div>
-      </div>
-
-      <div id="scheduleLockOverlay" class="schedule-lock-overlay">
-        <div class="lock-content">
-          <i class="fas fa-lock lock-icon"></i>
-          <p class="lock-text" data-i18n="schedule.paidOnly">仅限付费会员使用</p>
-          <button id="upgradeBtn" class="upgrade-btn" data-i18n="schedule.upgrade">升级会员</button>
-        </div>
-      </div>
-
-      <div class="card-content">
-        <div id="scheduleListContainer" style="display: none;">
-          <div class="schedule-list-header">
-            <span class="schedule-list-title" data-i18n="schedule.configured">已配置的定时同步</span>
-            <span id="scheduleCount" class="schedule-list-count"></span>
-          </div>
-          <div id="scheduleList" class="schedule-list"></div>
-        </div>
-
-        <div id="scheduleFormSection">
-          <div class="form-item">
-            <label for="scheduleInterval" data-i18n="schedule.interval">同步间隔</label>
-            <div class="field-shell">
-              <i class="fas fa-hourglass-half"></i>
-              <select id="scheduleInterval" class="config-input">
-                <option value="1" data-i18n="schedule.interval.1h">每 1 小时</option>
-                <option value="3" selected data-i18n="schedule.interval.3h">每 3 小时</option>
-                <option value="6" data-i18n="schedule.interval.6h">每 6 小时</option>
-                <option value="12" data-i18n="schedule.interval.12h">每 12 小时</option>
-                <option value="24" data-i18n="schedule.interval.24h">每天一次（9:00）</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-item">
-            <label for="personalBaseToken" data-i18n="schedule.token">多维表格授权码</label>
-            <div class="field-shell">
-              <i class="fas fa-shield-halved"></i>
-              <input id="personalBaseToken" type="password" class="config-input" data-i18n-placeholder="schedule.tokenPlaceholder" placeholder="在多维表格右上角 > 更多 > 获取授权码" />
-            </div>
-          </div>
-
-          <div class="split-fields">
-            <div class="form-item">
-              <label for="scheduleAppToken">AppToken</label>
-              <div class="field-shell">
-                <i class="fas fa-fingerprint"></i>
-                <input id="scheduleAppToken" class="config-input" data-i18n-placeholder="schedule.appTokenPlaceholder" placeholder="从 URL 或自动获取" />
-              </div>
-            </div>
-            <div class="form-item">
-              <label for="scheduleTableId">TableId</label>
-              <div class="field-shell">
-                <i class="fas fa-hashtag"></i>
-                <input id="scheduleTableId" class="config-input" data-i18n-placeholder="schedule.tableIdPlaceholder" placeholder="从选区自动获取" />
-              </div>
-            </div>
-          </div>
-
-          <button id="enableSchedule" class="schedule-btn schedule-btn-enable">
-            <i class="fas fa-plus"></i>
-            <span data-i18n="schedule.add">添加定时同步</span>
+    <!-- ─── Sync tab ──────────────────────────────────────── -->
+    <section class="tab-pane" data-pane="sync">
+      <div class="soft-card sync-hero" id="syncHero">
+        <div class="sync-hero-head">
+          <span id="syncStatusPill" class="sync-status-pill is-idle">
+            <span class="sync-status-dot"></span>
+            <span id="syncStatusLabel" data-i18n="sync.statusIdle">空闲</span>
+          </span>
+          <button id="syncPauseBtn" type="button" class="round-icon-btn" hidden aria-label="pause">
+            <i class="fas fa-pause"></i>
           </button>
         </div>
+
+        <div class="sync-hero-figures">
+          <div class="sync-hero-pct">
+            <span id="syncProgressValue" class="sync-pct-num">0</span><span class="sync-pct-unit">%</span>
+          </div>
+          <div class="sync-hero-right">
+            <div id="syncCountText" class="sync-count">— / —</div>
+            <div id="syncEtaText" class="sync-eta" data-i18n="sync.idleEta">尚未开始同步</div>
+          </div>
+        </div>
+
+        <div class="progress-bar-container">
+          <div id="syncProgressBar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+
+        <div id="syncProgressText" class="sync-progress-text" data-i18n="sync.idleHint">点击「配置」中的同步按钮开始</div>
+        <div id="syncSubText" class="sync-progress-sub"></div>
+      </div>
+
+      <div class="soft-card sync-timeline-card">
+        <header class="soft-section-title">
+          <h2 data-i18n="sync.timeline">同步步骤</h2>
+          <span class="soft-section-hint" id="syncTimelineHint" data-i18n="sync.timelineIdle">实时</span>
+        </header>
+        <ol id="syncTimeline" class="sync-timeline">
+          <li class="sync-timeline-empty" data-i18n="sync.timelineEmpty">同步开始后会在这里显示步骤</li>
+        </ol>
+      </div>
+
+      <div class="sync-footer">
+        <span id="syncElapsedText" class="sync-elapsed"></span>
+        <button id="syncCancelBtn" class="link-danger" type="button" hidden data-i18n="sync.cancel">取消同步</button>
+      </div>
+
+      <div id="syncPaywall" class="sync-paywall" hidden>
+        <div class="sync-paywall-head">
+          <i class="fas fa-lock"></i>
+          <span data-i18n="sync.paywallTitle">免费版每次最多 5 封</span>
+        </div>
+        <p id="syncPaywallText" class="sync-paywall-text"></p>
+        <button id="syncPaywallCta" type="button" class="main-action-btn sync-paywall-cta">
+          <span class="btn-content">
+            <i class="fas fa-sparkles btn-icon"></i>
+            <span data-i18n="sync.paywallCta">升级 ¥499 · 解锁完整同步 + 1 个定时席位</span>
+            <i class="fas fa-arrow-right btn-icon"></i>
+          </span>
+        </button>
+      </div>
+
+      <button id="syncNextBtn" class="next-step-btn" type="button" hidden>
+        <span class="next-step-eyebrow" data-i18n="sync.nextEyebrow">下一步</span>
+        <span class="next-step-title" data-i18n="sync.nextTitle">配置后台定时同步</span>
+        <i class="fas fa-arrow-right"></i>
+      </button>
+    </section>
+
+    <!-- ─── Schedule tab ──────────────────────────────────── -->
+    <section class="tab-pane" data-pane="schedule">
+      <div class="soft-card schedule-summary">
+        <div class="schedule-summary-head">
+          <h2 data-i18n="schedule.title">定时同步</h2>
+          <span id="schedulePaidSummary" class="schedule-paid-summary">—</span>
+        </div>
+        <div class="progress-bar-container schedule-summary-bar">
+          <div id="schedulePaidBar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="schedule-section-head">
+        <h3 class="soft-section-title-text" data-i18n="schedule.accounts">邮箱账号</h3>
+        <span class="schedule-section-hint" data-i18n="schedule.perAccountHint">按账号开通 · ¥499 / 年</span>
+      </div>
+
+      <div id="scheduleList" class="schedule-list">
+        <div id="scheduleEmpty" class="schedule-empty">
+          <i class="fas fa-clock"></i>
+          <p data-i18n="schedule.empty">还没有定时同步任务，先在「配置」里设置好邮箱再添加</p>
+        </div>
+      </div>
+
+      <button id="scheduleAddBtn" type="button" class="dashed-action-btn">
+        <i class="fas fa-plus"></i>
+        <span data-i18n="schedule.addAccount">添加邮箱账号</span>
+      </button>
+
+      <div class="hint-card">
+        <i class="fas fa-circle-info"></i>
+        <p data-i18n="schedule.noticeFooter">开通后该邮箱可使用 1 年定时同步，到期前会提醒续费</p>
+      </div>
+
+      <!-- Schedule add form (collapsible) -->
+      <section id="scheduleFormSection" class="soft-card" hidden>
+        <header class="soft-section-title">
+          <h2 data-i18n="schedule.addTitle">添加定时同步</h2>
+          <button id="scheduleFormClose" type="button" class="round-icon-btn" aria-label="close">
+            <i class="fas fa-xmark"></i>
+          </button>
+        </header>
+        <p class="soft-section-desc" data-i18n="schedule.addDesc">沿用当前「配置」里的邮箱与文件夹，下面填写多维表格信息</p>
+
+        <div class="form-item">
+          <label for="scheduleInterval" data-i18n="schedule.interval">同步间隔</label>
+          <div class="field-shell">
+            <i class="fas fa-hourglass-half"></i>
+            <select id="scheduleInterval" class="config-input">
+              <option value="1" data-i18n="schedule.interval.1h">每 1 小时</option>
+              <option value="3" selected data-i18n="schedule.interval.3h">每 3 小时</option>
+              <option value="6" data-i18n="schedule.interval.6h">每 6 小时</option>
+              <option value="12" data-i18n="schedule.interval.12h">每 12 小时</option>
+              <option value="24" data-i18n="schedule.interval.24h">每天一次（9:00）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-item">
+          <label for="personalBaseToken" data-i18n="schedule.token">多维表格授权码</label>
+          <div class="field-shell">
+            <i class="fas fa-shield-halved"></i>
+            <input id="personalBaseToken" type="password" class="config-input" data-i18n-placeholder="schedule.tokenPlaceholder" placeholder="在多维表格右上角 > 更多 > 获取授权码" />
+          </div>
+        </div>
+
+        <div class="split-fields">
+          <div class="form-item">
+            <label for="scheduleAppToken">AppToken</label>
+            <div class="field-shell">
+              <i class="fas fa-fingerprint"></i>
+              <input id="scheduleAppToken" class="config-input" data-i18n-placeholder="schedule.appTokenPlaceholder" placeholder="从 URL 或自动获取" />
+            </div>
+          </div>
+          <div class="form-item">
+            <label for="scheduleTableId">TableId</label>
+            <div class="field-shell">
+              <i class="fas fa-hashtag"></i>
+              <input id="scheduleTableId" class="config-input" data-i18n-placeholder="schedule.tableIdPlaceholder" placeholder="从选区自动获取" />
+            </div>
+          </div>
+        </div>
+
+        <button id="enableSchedule" class="main-action-btn">
+          <span class="btn-content">
+            <i class="fas fa-plus btn-icon"></i>
+            <span data-i18n="schedule.add">添加定时同步</span>
+          </span>
+        </button>
 
         <div id="scheduleResultContainer" class="result-section" style="display: none;">
           <div id="scheduleResultMessage" class="result-message"></div>
         </div>
-      </div>
+      </section>
     </section>
 
-    <section class="hint-card">
-      <i class="fas fa-circle-info"></i>
-      <p data-i18n="hint">系统会按邮件ID自动去重，仅新增未入库邮件，并同步附件。</p>
+    <!-- ─── Upgrade tab ───────────────────────────────────── -->
+    <section class="tab-pane" data-pane="upgrade">
+      <div class="soft-card upgrade-hero">
+        <div class="upgrade-target-chip">
+          <span id="upgradeTargetMono" class="provider-mono" style="background:#E8543A">G</span>
+          <span id="upgradeTargetEmail" class="upgrade-target-email">—</span>
+        </div>
+        <div class="upgrade-eyebrow" data-i18n="upgrade.eyebrow">EMAIL SYNC · PRO</div>
+        <h2 class="upgrade-title" data-i18n-html="upgrade.title">为此邮箱开通<br>后台定时同步</h2>
+        <div class="upgrade-price">
+          <span class="upgrade-price-currency">¥</span>
+          <span id="upgradePriceValue" class="upgrade-price-value">499</span>
+          <span class="upgrade-price-meta">
+            <span data-i18n="upgrade.priceUnit">/ 邮箱账号</span>
+            <span data-i18n="upgrade.priceTerm">使用 1 年 · 不限同步次数</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="soft-card features-card">
+        <div class="feature-row">
+          <span class="feature-icon"><i class="fas fa-inbox"></i></span>
+          <div class="feature-text">
+            <div class="feature-title" data-i18n="upgrade.feat1.title">不限同步行数</div>
+            <div class="feature-desc" data-i18n="upgrade.feat1.desc">取消免费版 10 行限制，一次性回填整个收件箱</div>
+          </div>
+        </div>
+        <div class="feature-row">
+          <span class="feature-icon"><i class="fas fa-clock"></i></span>
+          <div class="feature-text">
+            <div class="feature-title" data-i18n="upgrade.feat2.title">后台定时同步</div>
+            <div class="feature-desc" data-i18n="upgrade.feat2.desc">关闭插件后服务端继续运行，按设定的频率拉取新邮件</div>
+          </div>
+        </div>
+        <div class="feature-row">
+          <span class="feature-icon"><i class="fas fa-folder-open"></i></span>
+          <div class="feature-text">
+            <div class="feature-title" data-i18n="upgrade.feat3.title">多文件夹 · 多账号</div>
+            <div class="feature-desc" data-i18n="upgrade.feat3.desc">一个账号可同步多个文件夹，多账号并行互不影响</div>
+          </div>
+        </div>
+        <div class="feature-row">
+          <span class="feature-icon"><i class="fas fa-paperclip"></i></span>
+          <div class="feature-text">
+            <div class="feature-title" data-i18n="upgrade.feat4.title">附件全量同步</div>
+            <div class="feature-desc" data-i18n="upgrade.feat4.desc">附件不限大小、不限数量，断点续传</div>
+          </div>
+        </div>
+        <div class="feature-row">
+          <span class="feature-icon"><i class="fas fa-shield-halved"></i></span>
+          <div class="feature-text">
+            <div class="feature-title" data-i18n="upgrade.feat5.title">加密存储 · 审计</div>
+            <div class="feature-desc" data-i18n="upgrade.feat5.desc">授权码加密、API 调用留痕，可随时撤销</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="upgrade-payments">
+        <h3 class="soft-section-title-text" data-i18n="upgrade.payment">支付方式</h3>
+        <label class="payment-row is-active">
+          <span class="payment-radio"><span class="payment-radio-dot"></span></span>
+          <span class="payment-name">
+            <i class="fab fa-alipay"></i>
+            <span data-i18n="upgrade.pay.alipay">支付宝</span>
+          </span>
+          <span class="payment-desc" data-i18n="upgrade.pay.alipayDesc">扫码即时到账</span>
+        </label>
+      </div>
+
+      <button id="upgradeBtn" class="main-action-btn">
+        <span class="btn-content">
+          <span id="upgradeCtaText" data-i18n="upgrade.cta">支付 ¥499 · 开通</span>
+          <i class="fas fa-arrow-right btn-icon"></i>
+        </span>
+      </button>
+      <div class="upgrade-fineprint" data-i18n="upgrade.fineprint">7 天内未使用可退款 · 续费自主控制</div>
     </section>
 
     <footer class="footer-info" data-i18n="footer">© 2026 邮箱同步工具</footer>

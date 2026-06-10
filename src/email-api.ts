@@ -29,6 +29,7 @@ export interface EmailSyncRequestPayload {
   folder?: string;
   maxMessages?: number;
   userId?: string;
+  tenantKey?: string;
 }
 
 export interface EmailQuotaResponse {
@@ -36,6 +37,7 @@ export interface EmailQuotaResponse {
   used: number;
   remaining: number;
   total: number;
+  perSync?: number;
 }
 
 export interface EmailSyncResponse {
@@ -44,6 +46,9 @@ export interface EmailSyncResponse {
   provider?: string;
   mailbox?: string;
   emails?: SyncedEmail[];
+  paid?: boolean;
+  perSyncLimit?: number | null;
+  capped?: boolean;
 }
 
 function buildUrl(baseUrl: string, path: string): string {
@@ -97,8 +102,10 @@ async function requestGet<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function checkEmailQuota(baseUrl: string, userId: string): Promise<EmailQuotaResponse> {
-  const url = buildUrl(baseUrl, `/api/email/quota?userId=${encodeURIComponent(userId)}`);
+export async function checkEmailQuota(baseUrl: string, userId: string, tenantKey?: string): Promise<EmailQuotaResponse> {
+  const qs = new URLSearchParams({ userId });
+  if (tenantKey) qs.set('tenantKey', tenantKey);
+  const url = buildUrl(baseUrl, `/api/email/quota?${qs.toString()}`);
   return requestGet<EmailQuotaResponse>(url);
 }
 

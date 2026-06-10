@@ -7,7 +7,11 @@
 
 import { connect } from 'cloudflare:sockets';
 
-const FREE_EMAIL_QUOTA = 3;
+// Free tier: cap per-sync messages (not cumulative). Paying once unlocks the user
+// for unlimited per-sync size + 1 schedule seat.
+const FREE_PER_SYNC_LIMIT = 5;
+// kept for backward compatibility with the older /api/email/quota response shape
+const FREE_EMAIL_QUOTA = FREE_PER_SYNC_LIMIT;
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
 const SCHEDULE_KV_KEY = 'email:schedules';
 
@@ -1269,21 +1273,113 @@ async function verifyStripeWebhook(req, env, rawBody) {
 
 // ─── route handlers ───────────────────────────────────────
 
+// Tenant-level whitelist: any user whose plugin reports a whitelisted tenantKey is treated
+// as fully PRO (unlimited per-sync + schedules auto-PRO + no seat_required gate).
+// Source of truth: KV key `email:tenant:whitelist:<tenantKey>` → any non-null value.
+function normalizeTenantKey(raw) {
+  return String(raw || '').trim();
+}
+
+async function isTenantWhitelisted(env, tenantKey) {
+  const tk = normalizeTenantKey(tenantKey);
+  if (!tk) return false;
+  try {
+    const v = await getState(env, `email:tenant:whitelist:${tk}`);
+    return !!v;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Legacy "covers all" sources — Stripe subscription / pre-credit Alipay / manual comps.
+// These predate per-account billing; treat their schedules as PRO even without paidUntil
+// and allow them to create new schedules without consuming a credit.
+function isLegacyAllCoverSource(src) {
+  const s = String(src || '');
+  return (
+    s.startsWith('checkout.') ||
+    s.startsWith('customer.') ||
+    s === 'alipay_trade' ||
+    s === 'alipay_notify' ||
+    s === 'manual_stripe_recovery'
+  );
+}
+
+// Index of unconsumed credits per user: `{ tradeNos: ['EM…', 'EM…'] }`
+async function loadUserCredits(env, userId) {
+  if (!userId) return { tradeNos: [] };
+  const raw = await getState(env, `email:user:credits:${userId}`);
+  return { tradeNos: Array.isArray(raw?.tradeNos) ? raw.tradeNos : [] };
+}
+
+async function saveUserCredits(env, userId, tradeNos) {
+  if (!userId) return;
+  await putState(env, `email:user:credits:${userId}`, { tradeNos });
+}
+
+async function pushUserCredit(env, userId, outTradeNo) {
+  if (!userId || !outTradeNo) return;
+  const idx = await loadUserCredits(env, userId);
+  if (!idx.tradeNos.includes(outTradeNo)) {
+    idx.tradeNos.push(outTradeNo);
+    await saveUserCredits(env, userId, idx.tradeNos);
+  }
+}
+
+async function claimUserCredit(env, userId) {
+  if (!userId) return null;
+  const idx = await loadUserCredits(env, userId);
+  const now = Date.now();
+  while (idx.tradeNos.length) {
+    const tradeNo = idx.tradeNos[0];
+    const trade = await getState(env, `email:pay:trade:${tradeNo}`);
+    const valid = trade && trade.status === 'TRADE_SUCCESS' && trade.intent === 'credit' && !trade.consumed && Number(trade.paidUntil) > now;
+    if (valid) {
+      // Pop the head and persist; caller marks trade.consumed
+      idx.tradeNos.shift();
+      await saveUserCredits(env, userId, idx.tradeNos);
+      return { outTradeNo: tradeNo, trade };
+    }
+    // stale entry — drop it
+    idx.tradeNos.shift();
+    await saveUserCredits(env, userId, idx.tradeNos);
+  }
+  return null;
+}
+
+async function userHasAnyPaidAccess(env, userId) {
+  if (!userId) return false;
+  try {
+    const ent = await getEntitlementByUserId(env, userId);
+    if (resolveEntitlementActive(ent)) return true;
+  } catch (_) {}
+  try {
+    const all = await loadSchedules(env);
+    const now = Date.now();
+    for (const s of Object.values(all)) {
+      if (s.userId !== userId) continue;
+      if (Number(s.paidUntil) > now) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
 async function handleEmailQuota(req, env) {
   const url = new URL(req.url);
   const userId = normalizeUserId(url.searchParams.get('userId'));
+  const tenantKey = normalizeTenantKey(url.searchParams.get('tenantKey'));
   if (!userId) {
     return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 userId 参数' });
   }
-  const entitlement = await getEntitlementByUserId(env, userId);
-  const paid = resolveEntitlementActive(entitlement);
-  if (paid) {
-    return jsonResponse(req, env, 200, { paid: true, used: 0, remaining: Infinity, total: Infinity });
+  if (tenantKey) console.log('[quota] tenantKey =', tenantKey, 'userId =', userId);
+  if (await isTenantWhitelisted(env, tenantKey)) {
+    return jsonResponse(req, env, 200, { paid: true, perSync: 500, used: 0, remaining: Infinity, total: Infinity, reason: 'tenant_whitelist' });
   }
-  const usage = await getUsageByUserId(env, userId);
-  const used = usage.usedRecords;
-  const remaining = Math.max(0, FREE_EMAIL_QUOTA - used);
-  return jsonResponse(req, env, 200, { paid: false, used, remaining, total: FREE_EMAIL_QUOTA });
+  const paid = await userHasAnyPaidAccess(env, userId);
+  if (paid) {
+    return jsonResponse(req, env, 200, { paid: true, perSync: 500, used: 0, remaining: Infinity, total: Infinity });
+  }
+  return jsonResponse(req, env, 200, { paid: false, perSync: FREE_PER_SYNC_LIMIT, used: 0, remaining: FREE_PER_SYNC_LIMIT, total: FREE_PER_SYNC_LIMIT });
 }
 
 async function handleEmailUsage(req, env) {
@@ -1305,22 +1401,16 @@ async function handleEmailSync(req, env) {
     const userId = normalizeUserId(body?.userId);
     let maxMessages = normalizeInt(body?.maxMessages, 100, 1, 500);
 
-    if (userId) {
-      const usage = await getUsageByUserId(env, userId);
-      const entitlement = await getEntitlementByUserId(env, userId);
-      const paid = resolveEntitlementActive(entitlement);
-      if (!paid) {
-        const used = usage.usedRecords || 0;
-        const remaining = Math.max(0, FREE_EMAIL_QUOTA - used);
-        if (remaining <= 0) {
-          return jsonResponse(req, env, 403, {
-            status: 'quota_exceeded',
-            message: `免费 ${FREE_EMAIL_QUOTA} 封额度已用完，请升级付费版`,
-            used,
-            total: FREE_EMAIL_QUOTA
-          });
-        }
-        maxMessages = Math.min(maxMessages, remaining);
+    const tenantKey = normalizeTenantKey(body?.tenantKey);
+    if (tenantKey) console.log('[sync] tenantKey =', tenantKey, 'userId =', userId);
+    let userPaid = false;
+    if (await isTenantWhitelisted(env, tenantKey)) {
+      userPaid = true;
+    } else if (userId) {
+      userPaid = await userHasAnyPaidAccess(env, userId);
+      if (!userPaid) {
+        // Free tier: per-sync cap, no cumulative quota
+        maxMessages = Math.min(maxMessages, FREE_PER_SYNC_LIMIT);
       }
     }
 
@@ -1335,7 +1425,10 @@ async function handleEmailSync(req, env) {
       status: 'completed',
       provider: config.provider,
       mailbox: config.folder,
-      emails
+      emails,
+      paid: userPaid,
+      perSyncLimit: userPaid ? null : FREE_PER_SYNC_LIMIT,
+      capped: !userPaid && (Number(body?.maxMessages) || 0) > FREE_PER_SYNC_LIMIT
     });
   } catch (error) {
     return jsonResponse(req, env, 500, {
@@ -1523,6 +1616,54 @@ async function handleScheduleCreate(req, env) {
       return jsonResponse(req, env, 400, { status: 'failed', message: '请填写多维表格授权码、appToken 和 tableId' });
     }
 
+    const userId = String(body.userId || '').trim();
+    const tenantKey = normalizeTenantKey(body.tenantKey);
+    if (tenantKey) console.log('[schedule/create] tenantKey =', tenantKey, 'userId =', userId);
+    const tenantWhitelisted = await isTenantWhitelisted(env, tenantKey);
+    // Optional: consume a credit purchased earlier (pay-first → add-account flow)
+    let creditOutTradeNo = String(body.creditOutTradeNo || '').trim();
+    let creditPaidUntil = null;
+    let creditRecord = null;
+    if (creditOutTradeNo) {
+      const tradeKey = `email:pay:trade:${creditOutTradeNo}`;
+      creditRecord = await getState(env, tradeKey);
+      if (
+        creditRecord &&
+        creditRecord.status === 'TRADE_SUCCESS' &&
+        creditRecord.intent === 'credit' &&
+        !creditRecord.consumed &&
+        creditRecord.userId === userId &&
+        Number(creditRecord.paidUntil) > Date.now()
+      ) {
+        creditPaidUntil = Number(creditRecord.paidUntil);
+      } else {
+        creditRecord = null;
+      }
+    }
+
+    // Seat enforcement: try an indexed unconsumed credit if frontend didn't pass one
+    if (!creditPaidUntil && userId) {
+      const claimed = await claimUserCredit(env, userId);
+      if (claimed) {
+        creditPaidUntil = Number(claimed.trade.paidUntil);
+        creditRecord = claimed.trade;
+        creditOutTradeNo = claimed.outTradeNo;
+      }
+    }
+    if (!creditPaidUntil && userId && !tenantWhitelisted) {
+      let legacyCover = false;
+      try {
+        const ent = await getEntitlementByUserId(env, userId);
+        if (resolveEntitlementActive(ent)) legacyCover = isLegacyAllCoverSource(ent?.source);
+      } catch (_) {}
+      if (!legacyCover) {
+        return jsonResponse(req, env, 402, {
+          status: 'seat_required',
+          message: '请先购买定时同步席位（¥499/账号/年）'
+        });
+      }
+    }
+
     const schedule = {
       id,
       enabled: true,
@@ -1538,15 +1679,24 @@ async function handleScheduleCreate(req, env) {
         maxMessages: Math.max(1, Math.min(500, Number(body.imapConfig?.maxMessages) || 100))
       },
       feishuConfig: { personalBaseToken, appToken, tableId },
-      userId: String(body.userId || '').trim(),
+      userId,
+      tenantKey: tenantKey || null,
       createdAt: Date.now(),
       lastSyncAt: null,
       lastSyncStatus: null,
-      lastSyncMessage: null
+      lastSyncMessage: null,
+      paidUntil: creditPaidUntil
     };
 
     await putSchedule(env, schedule);
-    return jsonResponse(req, env, 200, { status: 'ok', id: schedule.id, intervalHours: schedule.intervalHours });
+
+    if (creditRecord) {
+      creditRecord.consumed = true;
+      creditRecord.consumedBy = schedule.id;
+      await putState(env, `email:pay:trade:${creditOutTradeNo}`, creditRecord, 60 * 60 * 24);
+    }
+
+    return jsonResponse(req, env, 200, { status: 'ok', id: schedule.id, intervalHours: schedule.intervalHours, paidUntil: schedule.paidUntil });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: error?.message || '创建定时任务失败' });
   }
@@ -1570,24 +1720,59 @@ async function handleScheduleList(req, env) {
   try {
     const url = new URL(req.url);
     const userId = normalizeUserId(url.searchParams.get('userId'));
+    const tenantKey = normalizeTenantKey(url.searchParams.get('tenantKey'));
+    if (tenantKey) console.log('[schedule/list] tenantKey =', tenantKey, 'userId =', userId);
+    // user-level paid: covers sync per-cap and (only for legacy Stripe) all schedules
+    let userPaid = false;
+    let legacyAllCover = false;
+    if (await isTenantWhitelisted(env, tenantKey)) {
+      userPaid = true;
+      legacyAllCover = true;
+    } else if (userId) {
+      try {
+        const entitlement = await getEntitlementByUserId(env, userId);
+        if (resolveEntitlementActive(entitlement)) {
+          userPaid = true;
+          legacyAllCover = isLegacyAllCoverSource(entitlement?.source);
+        }
+      } catch (_) {}
+    }
+    const now = Date.now();
     const all = await loadSchedules(env);
     const list = Object.values(all)
       .filter(s => !userId || !s.userId || s.userId === userId)
-      .map(s => ({
-        id: s.id,
-        enabled: s.enabled,
-        intervalHours: s.intervalHours,
-        provider: s.imapConfig?.provider || 'custom',
-        email: s.imapConfig?.email || '',
-        folder: s.imapConfig?.folder || 'INBOX',
-        lastSyncAt: s.lastSyncAt,
-        lastSyncStatus: s.lastSyncStatus,
-        lastSyncMessage: s.lastSyncMessage,
-        createdAt: s.createdAt
-      }));
-    return jsonResponse(req, env, 200, { status: 'ok', schedules: list });
+      .map(s => {
+        const paidUntil = Number(s.paidUntil) || null;
+        const accountPaid = !!(paidUntil && paidUntil > now);
+        return {
+          id: s.id,
+          enabled: s.enabled,
+          intervalHours: s.intervalHours,
+          provider: s.imapConfig?.provider || 'custom',
+          email: s.imapConfig?.email || '',
+          folder: s.imapConfig?.folder || 'INBOX',
+          lastSyncAt: s.lastSyncAt,
+          lastSyncStatus: s.lastSyncStatus,
+          lastSyncMessage: s.lastSyncMessage,
+          createdAt: s.createdAt,
+          paidUntil,
+          paid: accountPaid || legacyAllCover
+        };
+      });
+    return jsonResponse(req, env, 200, { status: 'ok', schedules: list, userPaid, legacyAllCover });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: error?.message || '查询列表失败' });
+  }
+}
+
+async function markSchedulePaid(env, scheduleId, expiresAt) {
+  if (!scheduleId) return;
+  const schedule = await getSchedule(env, scheduleId);
+  if (!schedule) return;
+  const current = Number(schedule.paidUntil) || 0;
+  if (expiresAt > current) {
+    schedule.paidUntil = expiresAt;
+    await putSchedule(env, schedule);
   }
 }
 
@@ -1719,7 +1904,7 @@ function generateOutTradeNo() {
   return `EM${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function createAlipayPrecreateOrder(env, userId, req) {
+async function createAlipayPrecreateOrder(env, userId, req, extra = {}) {
   const amount = String(env.ALIPAY_AMOUNT || '980.00').trim();
   const subject = String(env.ALIPAY_SUBJECT || getStripeProductName(env)).trim();
   const outTradeNo = generateOutTradeNo();
@@ -1732,12 +1917,18 @@ async function createAlipayPrecreateOrder(env, userId, req) {
     { out_trade_no: outTradeNo, total_amount: amount, subject },
     { notify_url: notifyUrl }
   );
-  await putState(
-    env,
-    `email:pay:trade:${outTradeNo}`,
-    { userId, amount, subject, status: 'WAIT_BUYER_PAY', qrCode: result.qr_code, createdAt: Date.now() },
-    60 * 60 * 24
-  );
+  const tradeRecord = {
+    userId,
+    amount,
+    subject,
+    status: 'WAIT_BUYER_PAY',
+    qrCode: result.qr_code,
+    createdAt: Date.now()
+  };
+  if (extra.scheduleId) tradeRecord.scheduleId = String(extra.scheduleId);
+  if (extra.accountEmail) tradeRecord.accountEmail = String(extra.accountEmail);
+  if (extra.intent === 'credit') tradeRecord.intent = 'credit';
+  await putState(env, `email:pay:trade:${outTradeNo}`, tradeRecord, 60 * 60 * 24);
   return { outTradeNo, qrCode: result.qr_code, product: { name: subject, subject, cnyAmount: amount, durationDays: 365 } };
 }
 
@@ -1746,8 +1937,13 @@ async function handleCreateAlipayOrder(req, env) {
     const body = (await req.json().catch(() => ({}))) || {};
     const userId = normalizeUserId(body?.userId);
     if (!userId) return jsonResponse(req, env, 400, { status: 'failed', message: '缺少 userId' });
-    // Phase 1: route to billing via service binding (outTradeNo prefix BL)
-    if (env.BILLING) {
+    const scheduleId = String(body?.scheduleId || '').trim();
+    const accountEmail = String(body?.accountEmail || '').trim();
+    const intent = String(body?.intent || '').trim() === 'credit' ? 'credit' : '';
+    // per-account orders and credit orders both need a local trade record
+    const forceLocal = !!scheduleId || intent === 'credit';
+    // Phase 1: route to billing via service binding (outTradeNo prefix BL) — only for legacy user-level orders
+    if (env.BILLING && !forceLocal) {
       try {
         const r = await env.BILLING.fetch(new Request('https://billing/v1/alipay/precreate', {
           method: 'POST',
@@ -1761,9 +1957,9 @@ async function handleCreateAlipayOrder(req, env) {
         console.log('[alipay precreate] billing failed, fallback to local:', billingErr?.message);
       }
     }
-    // legacy local path (outTradeNo prefix EM, kept for fallback)
-    const order = await createAlipayPrecreateOrder(env, userId, req);
-    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode, product: order.product, via: 'local' });
+    // local path (outTradeNo prefix EM) — also used for per-schedule orders and credit orders
+    const order = await createAlipayPrecreateOrder(env, userId, req, { scheduleId, accountEmail, intent });
+    return jsonResponse(req, env, 200, { status: 'ok', outTradeNo: order.outTradeNo, qrCode: order.qrCode, product: order.product, via: 'local', scheduleId: scheduleId || undefined, intent: intent || undefined });
   } catch (error) {
     return jsonResponse(req, env, 500, { status: 'failed', message: `创建支付宝订单失败：${error?.message || 'unknown error'}` });
   }
@@ -1800,10 +1996,21 @@ async function handleAlipayTradeQuery(req, env) {
     const tradeStatus = String(result.trade_status || '');
     if (tradeStatus === 'TRADE_SUCCESS' || tradeStatus === 'TRADE_FINISHED') {
       const expiresAt = Date.now() + YEAR_SECONDS * 1000;
-      await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_trade', expiresAt);
+      if (tradeInfo.scheduleId) {
+        await markSchedulePaid(env, tradeInfo.scheduleId, expiresAt);
+      } else if (tradeInfo.intent === 'credit') {
+        // Credit purchase: stash paidUntil on the trade (schedule/create will consume it),
+        // mark user-level entitlement so per-sync cap is lifted immediately,
+        // and push to the per-user credit index so the worker can find it later
+        tradeInfo.paidUntil = expiresAt;
+        await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_credit', expiresAt);
+        await pushUserCredit(env, tradeInfo.userId, outTradeNo);
+      } else {
+        await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_trade', expiresAt);
+      }
       tradeInfo.status = 'TRADE_SUCCESS';
       await putState(env, `email:pay:trade:${outTradeNo}`, tradeInfo, 60 * 60 * 24);
-      return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'TRADE_SUCCESS', paid: true });
+      return jsonResponse(req, env, 200, { status: 'ok', tradeStatus: 'TRADE_SUCCESS', paid: true, scheduleId: tradeInfo.scheduleId || undefined, intent: tradeInfo.intent || undefined });
     }
     return jsonResponse(req, env, 200, { status: 'ok', tradeStatus, paid: false });
   } catch (_) {
@@ -1834,7 +2041,15 @@ async function handleAlipayNotify(req, env) {
     const tradeInfo = await getState(env, `email:pay:trade:${outTradeNo}`);
     if (tradeInfo && tradeInfo.userId) {
       const expiresAt = Date.now() + YEAR_SECONDS * 1000;
-      await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_notify', expiresAt);
+      if (tradeInfo.scheduleId) {
+        await markSchedulePaid(env, tradeInfo.scheduleId, expiresAt);
+      } else if (tradeInfo.intent === 'credit') {
+        tradeInfo.paidUntil = expiresAt;
+        await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_credit', expiresAt);
+        await pushUserCredit(env, tradeInfo.userId, outTradeNo);
+      } else {
+        await markEntitlementActive(env, { userId: tradeInfo.userId }, 'alipay_notify', expiresAt);
+      }
       tradeInfo.status = 'TRADE_SUCCESS';
       await putState(env, `email:pay:trade:${outTradeNo}`, tradeInfo, 60 * 60 * 24);
     }
@@ -1958,9 +2173,40 @@ export default {
     const now = Date.now();
 
     // 筛选出本轮需要执行的 schedule
+    // 按账号付费：schedule.paidUntil 仍有效 → 跑；老 Stripe/Alipay entitlement → 兜底全跑
+    const legacyCoverCache = new Map();
+    async function userHasLegacyAllCover(userId) {
+      if (!userId) return false;
+      if (legacyCoverCache.has(userId)) return legacyCoverCache.get(userId);
+      try {
+        const ent = await getEntitlementByUserId(env, userId);
+        const legacy = resolveEntitlementActive(ent) && isLegacyAllCoverSource(ent?.source);
+        legacyCoverCache.set(userId, legacy);
+        return legacy;
+      } catch (_) {
+        legacyCoverCache.set(userId, false);
+        return false;
+      }
+    }
+
+    const tenantWhitelistCache = new Map();
+    async function tenantCovers(tk) {
+      const norm = normalizeTenantKey(tk);
+      if (!norm) return false;
+      if (tenantWhitelistCache.has(norm)) return tenantWhitelistCache.get(norm);
+      const ok = await isTenantWhitelisted(env, norm);
+      tenantWhitelistCache.set(norm, ok);
+      return ok;
+    }
+
     const toRun = [];
     for (const [id, schedule] of Object.entries(schedules)) {
       if (!schedule.enabled) continue;
+      const accountPaid = !!(schedule.paidUntil && schedule.paidUntil > now);
+      const covered = accountPaid
+        || await tenantCovers(schedule.tenantKey)
+        || await userHasLegacyAllCover(schedule.userId);
+      if (!covered) continue;
       const intervalMs = (schedule.intervalHours || 3) * 60 * 60 * 1000;
       const bufferMs = 5 * 60 * 1000;
       const lastSync = schedule.lastSyncAt || 0;

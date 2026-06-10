@@ -10,8 +10,32 @@ import { setLocale, applyI18n, t, getLocale } from './i18n';
 const BASE_URL = (import.meta.env.VITE_WORKER_BASE_URL as string) || 'https://emailsync.xiaomiao.win';
 
 let currentUserId = '';
+let currentTenantKey = '';
 let currentUserPaid = false;
 let scheduleStatusTimer: ReturnType<typeof setInterval> | null = null;
+let activeTab: 'setup' | 'sync' | 'schedule' | 'upgrade' = 'setup';
+let upgradeTarget: { scheduleId?: string; provider?: string; email?: string; intent?: 'credit' } | null = null;
+let pendingCreditTradeNo = '';
+let syncStartedAt: number | null = null;
+let syncElapsedTimer: ReturnType<typeof setInterval> | null = null;
+let syncSeenSteps: string[] = [];
+let syncAborted = false;
+const SYNC_ABORTED_MARKER = '__sync_aborted__';
+
+function checkSyncAborted(): void {
+  if (syncAborted) throw new Error(SYNC_ABORTED_MARKER);
+}
+let lastQuota: { used: number; total: number; paid: boolean } | null = null;
+
+const PROVIDER_MONO: Record<string, { mono: string; color: string }> = {
+  gmail: { mono: 'G', color: '#E8543A' },
+  qq: { mono: 'Q', color: '#2980EA' },
+  feishu: { mono: 'F', color: '#3370FF' },
+  '163': { mono: '网', color: '#E54545' },
+  yahoo: { mono: 'Y', color: '#6001D2' },
+  outlook: { mono: 'O', color: '#0078D4' },
+  custom: { mono: '⋯', color: '#5C5C5C' }
+};
 
 $(function () {
   initializeApp();
@@ -36,6 +60,12 @@ async function initializeApp() {
   } catch (_) {
     currentUserId = '';
   }
+  renderUidChip();
+  try {
+    currentTenantKey = await (bitable.bridge as any).getTenantKey();
+  } catch (_) {
+    currentTenantKey = '';
+  }
   await checkUserEntitlement();
   await autoFillBitableContext();
   await loadScheduleConfig();
@@ -54,12 +84,66 @@ function setDefaultConfig() {
 function bindEvents() {
   $('#startSync').on('click', handleStartSync);
   $('#enableSchedule').on('click', handleEnableSchedule);
-  $('#upgradeBtn').on('click', handleUpgrade);
+  $('#upgradeBtn').on('click', () => handleUpgrade());
   $('#loadFolders').on('click', handleLoadFolders);
   $('#alipayQRClose').on('click', () => {
     alipayPollingActive = false;
     $('#alipayQRModal').hide();
   });
+
+  // Tabs
+  $('.tab-btn').on('click', function () {
+    const tab = String($(this).attr('data-tab') || '') as typeof activeTab;
+    if (!tab) return;
+    setTab(tab);
+  });
+
+  // Provider tiles (replaces old dropdown)
+  $('#providerTiles').on('click', '.provider-tile', function () {
+    const provider = String($(this).attr('data-provider') || '');
+    if (!provider) return;
+    setProviderValue(provider);
+  });
+
+  // Add account: pay first, then reveal the form
+  $('#scheduleAddBtn').on('click', () => startAddAccountFlow());
+  $('#scheduleFormClose').on('click', () => {
+    $('#scheduleFormSection').prop('hidden', true);
+  });
+
+  // Sync screen controls — request cancellation; handleStartSync polls syncAborted
+  $('#syncCancelBtn').on('click', () => {
+    if (syncAborted) return;
+    syncAborted = true;
+    $('#syncCancelBtn').prop('disabled', true);
+    setSyncStatus('idle', t('sync.cancelling'));
+    appendSyncTimelineStep(t('sync.cancelling'), 'active');
+  });
+
+  // After-sync "next step" CTA → Schedule tab
+  $('#syncNextBtn').on('click', () => {
+    setTab('schedule');
+  });
+
+  // Paywall CTA (visible on Sync tab when free-cap was hit)
+  $('#syncPaywallCta').on('click', () => startAddAccountFlow());
+}
+
+function setTab(tab: typeof activeTab) {
+  activeTab = tab;
+  $('.tab-btn').each(function () {
+    const isActive = $(this).attr('data-tab') === tab;
+    $(this).toggleClass('is-active', isActive).attr('aria-selected', String(isActive));
+  });
+  $('.tab-pane').each(function () {
+    $(this).toggleClass('is-active', $(this).attr('data-pane') === tab);
+  });
+  // Upgrade tab is only shown when there's a target
+  if (tab === 'upgrade' && !upgradeTarget) {
+    $('.tab-btn[data-tab="upgrade"]').prop('hidden', true);
+  } else if (tab === 'upgrade') {
+    $('.tab-btn[data-tab="upgrade"]').prop('hidden', false);
+  }
 }
 
 let alipayPollingActive = false;
@@ -190,26 +274,36 @@ function renderFolderCheckboxes(folders: string[]) {
     return;
   }
 
-  // 手动输入框中的值作为默认选中
   const currentFolder = getFolder();
+  let checkedCount = 0;
 
   for (const folder of folders) {
     const isChecked = folder === currentFolder || folder === 'INBOX';
+    if (isChecked) checkedCount++;
     const $item = $(`
       <label class="folder-checkbox-item${isChecked ? ' checked' : ''}">
         <input type="checkbox" value="${escapeHtml(folder)}" ${isChecked ? 'checked' : ''} />
+        <span class="folder-checkbox-box"><i class="fas fa-check"></i></span>
         <span>${escapeHtml(folder)}</span>
       </label>
     `);
     $item.find('input').on('change', function () {
       $item.toggleClass('checked', $(this).is(':checked'));
+      updateFolderHint();
     });
     $container.append($item);
   }
 
   $container.show();
-  // 隐藏手动输入框（checkbox 已替代）
   $('#folder').closest('.folder-input-shell').hide();
+  $('#folderHint').text(t('setup.foldersSelected', { n: String(checkedCount), total: String(folders.length) }));
+}
+
+function updateFolderHint() {
+  const total = $('#folderCheckboxes input[type="checkbox"]').length;
+  if (!total) return;
+  const checked = $('#folderCheckboxes input[type="checkbox"]:checked').length;
+  $('#folderHint').text(t('setup.foldersSelected', { n: String(checked), total: String(total) }));
 }
 
 function getSelectedFolders(): string[] {
@@ -259,8 +353,11 @@ async function handleStartSync() {
     const allEmails: import('./email-api').SyncedEmail[] = [];
     const seenIds = new Set<string>();
     const folderErrors: string[] = [];
+    let wasCapped = false;
+    let capLimit = 5;
 
     for (let fi = 0; fi < folders.length; fi++) {
+      checkSyncAborted();
       const folder = folders[fi];
       const folderProgress = 10 + (fi / folders.length) * 40;
       updateProgress(folderProgress, t('msg.fetchingFolder', { folder, current: String(fi + 1), total: String(folders.length) }));
@@ -275,7 +372,8 @@ async function handleStartSync() {
           folder,
           secure,
           maxMessages,
-          userId: currentUserId || undefined
+          userId: currentUserId || undefined,
+          tenantKey: currentTenantKey || undefined
         });
         if ((syncResponse as any).status === 'quota_exceeded') {
           showResult((syncResponse as any).message || t('msg.quotaExhausted', { total: '' }), 'info');
@@ -285,6 +383,10 @@ async function handleStartSync() {
         if (syncResponse.status !== 'completed') {
           folderErrors.push(`${folder}: ${syncResponse.message || 'failed'}`);
           continue;
+        }
+        if (syncResponse.capped) {
+          wasCapped = true;
+          capLimit = Number(syncResponse.perSyncLimit) || capLimit;
         }
         const emails = Array.isArray(syncResponse.emails) ? syncResponse.emails : [];
         for (const e of emails) {
@@ -304,16 +406,20 @@ async function handleStartSync() {
     if (!allEmails.length) {
       showResult(t('msg.noNewEmails'), 'info');
       updateProgress(100, t('msg.noNewEmails'));
+      finalizeSync('success', t('msg.noNewEmails'));
       return;
     }
 
+    checkSyncAborted();
     updateProgress(55, t('msg.preparingTable'));
     const table = await prepareEmailTable(tableName, (progress, message) => {
       updateProgress(55 + progress * 0.1, message);
     });
 
+    checkSyncAborted();
     updateProgress(65, t('msg.writingRecords'));
     const stats = await writeEmailRecords(table, provider, allEmails, BASE_URL, (progress, message) => {
+      if (syncAborted) throw new Error(SYNC_ABORTED_MARKER);
       updateProgress(65 + progress * 0.35, message);
     });
 
@@ -327,6 +433,10 @@ async function handleStartSync() {
     }
 
     updateProgress(100, t('msg.syncComplete'));
+    updateSyncCount(stats.inserted, stats.total);
+    updateSyncSub(`${stats.inserted} ${t('sync.inserted')} · ${stats.skipped} ${t('sync.skipped')}${stats.patchedAttachments ? ` · ${stats.patchedAttachments} ${t('sync.attachments')}` : ''}`);
+    finalizeSync('success', t('msg.syncComplete'));
+
     const folderLabel = folders.length > 1 ? ` (${folders.length} folders)` : '';
     let resultMsg = `${t('msg.syncComplete')}${folderLabel}：${stats.total} / ${stats.inserted} / ${stats.skipped}`;
     if (stats.patchedAttachments > 0) {
@@ -335,15 +445,31 @@ async function handleStartSync() {
     if (folderErrors.length) {
       resultMsg += `\n${t('msg.partialFoldersFailed')}${folderErrors.join('；')}`;
     }
-    if (!currentUserPaid) {
-      resultMsg += `\n${t('msg.freeLimit')}`;
+    const showUpgrade = wasCapped && !currentUserPaid;
+    if (showUpgrade) {
+      const requested = getMaxMessages();
+      const capText = t('msg.freeCapHit', { limit: String(capLimit), requested: String(requested) });
+      resultMsg += `\n${capText}`;
+      // Surface paywall card on the Sync tab (the tab the user is currently looking at)
+      $('#syncPaywallText').text(capText);
+      $('#syncPaywall').prop('hidden', false);
+      // Hide the "下一步" next-step CTA in this case — the paywall is the next step
+      $('#syncNextBtn').prop('hidden', true);
     }
-    showResult(resultMsg, folderErrors.length ? 'info' : 'success', !currentUserPaid);
+    showResult(resultMsg, folderErrors.length ? 'info' : 'success', showUpgrade);
   } catch (error) {
-    showResult(t('msg.syncFailed', { error: (error as Error).message }), 'error');
-    hideProgress();
+    const msg = (error as Error).message;
+    if (msg === SYNC_ABORTED_MARKER) {
+      showResult(t('sync.cancelled'), 'info');
+      finalizeSync('idle', t('sync.cancelled'));
+      $('#syncTimeline li.is-active').removeClass('is-active').addClass('is-pending');
+    } else {
+      showResult(t('msg.syncFailed', { error: msg }), 'error');
+      finalizeSync('error', msg);
+    }
   } finally {
     setSyncLoading(false);
+    syncAborted = false;
   }
 }
 
@@ -355,14 +481,83 @@ function setSyncLoading(loading: boolean) {
   text.text(loading ? t('btn.syncing') : t('btn.sync'));
   if (loading) spinner.show();
   else spinner.hide();
+  if (loading) {
+    syncAborted = false;
+    setSyncStatus('running');
+    setTab('sync');
+    syncStartedAt = Date.now();
+    syncSeenSteps = [];
+    $('#syncTimeline').empty();
+    $('#syncCancelBtn').prop({ hidden: false, disabled: false });
+    $('#syncNextBtn').prop('hidden', true);
+    $('#syncPaywall').prop('hidden', true);
+    if (syncElapsedTimer) clearInterval(syncElapsedTimer);
+    syncElapsedTimer = setInterval(updateSyncElapsed, 1000);
+    updateSyncElapsed();
+  } else {
+    $('#syncCancelBtn').prop({ hidden: true, disabled: false });
+    if (syncElapsedTimer) {
+      clearInterval(syncElapsedTimer);
+      syncElapsedTimer = null;
+    }
+  }
+}
+
+function setSyncStatus(state: 'idle' | 'running' | 'success' | 'error', label?: string) {
+  const $pill = $('#syncStatusPill');
+  $pill.removeClass('is-idle is-running is-success is-error').addClass(`is-${state}`);
+  const labelKey =
+    state === 'running' ? 'sync.statusRunning'
+    : state === 'success' ? 'sync.statusSuccess'
+    : state === 'error' ? 'sync.statusError'
+    : 'sync.statusIdle';
+  $('#syncStatusLabel').text(label || t(labelKey));
 }
 
 function updateProgress(progress: number, message: string) {
   const safeProgress = Math.max(0, Math.min(100, progress));
-  $('#syncProgressContainer').show();
   $('#syncProgressBar').css('width', `${safeProgress}%`);
   $('#syncProgressText').text(message);
-  $('#syncProgressValue').text(`${Math.round(safeProgress)}%`);
+  $('#syncProgressValue').text(`${Math.round(safeProgress)}`);
+  if (message && syncSeenSteps[syncSeenSteps.length - 1] !== message) {
+    appendSyncTimelineStep(message, 'active');
+  }
+}
+
+function appendSyncTimelineStep(msg: string, state: 'done' | 'active' | 'pending') {
+  const $list = $('#syncTimeline');
+  $list.find('.sync-timeline-empty').remove();
+  $list.find('li.is-active').removeClass('is-active').addClass('is-done');
+  const now = new Date();
+  const ts = `${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+  syncSeenSteps.push(msg);
+  $list.append(`
+    <li class="is-${state}">
+      <span class="sync-timeline-msg">${escapeHtml(msg)}</span>
+      <span class="sync-timeline-time">${ts}</span>
+    </li>
+  `);
+}
+
+function updateSyncCount(current: number, total: number) {
+  $('#syncCountText').text(`${current.toLocaleString()} / ${total.toLocaleString()}`);
+}
+
+function updateSyncEta(eta: string) {
+  $('#syncEtaText').text(eta);
+}
+
+function updateSyncSub(sub: string) {
+  $('#syncSubText').text(sub);
+}
+
+function updateSyncElapsed() {
+  if (!syncStartedAt) {
+    $('#syncElapsedText').text('');
+    return;
+  }
+  const sec = Math.max(0, Math.floor((Date.now() - syncStartedAt) / 1000));
+  $('#syncElapsedText').text(t('sync.elapsed', { sec: String(sec) }));
 }
 
 function escapeHtml(str: string): string {
@@ -383,58 +578,36 @@ function showResult(message: string, type: 'success' | 'error' | 'info', showUpg
   messageEl.removeClass('success error info').addClass(type).html(html);
   $('#resultContainer').show();
   if (showUpgrade) {
-    $('#resultUpgradeLink').off('click').on('click', handleUpgrade);
+    // Per-account billing: buying a credit unlocks sync AND grants 1 schedule seat
+    $('#resultUpgradeLink').off('click').on('click', () => startAddAccountFlow());
   }
 }
 
 function hideProgress() {
-  $('#syncProgressContainer').hide();
+  // The Sync tab keeps the last state visible; nothing to hide.
 }
 
-$('#provider').on('change', function handleProviderChange() {
-  applyProviderPreset(String($(this).val() || ''));
-});
+function finalizeSync(state: 'success' | 'error' | 'idle', summary?: string) {
+  setSyncStatus(state === 'idle' ? 'idle' : state);
+  if (summary) updateSyncEta(summary);
+  if (state === 'success') {
+    $('#syncTimeline li.is-active').removeClass('is-active').addClass('is-done');
+    $('#syncNextBtn').prop('hidden', false);
+  } else {
+    $('#syncNextBtn').prop('hidden', true);
+    $('#syncPaywall').prop('hidden', true);
+  }
+}
 
-// Custom dropdown for provider (替换原生 select，飞书 webview 兼容)
+// Provider tile picker (replaces the old dropdown; tiles are wired in bindEvents)
 function setProviderValue(value: string) {
-  const $option = $(`#providerPanel .dropdown-option[data-value="${value}"]`);
-  if (!$option.length || $option.prop('disabled')) return;
+  if (!value) return;
   $('#provider').val(value);
-  $('#providerLabel').text(String($option.text() || ''));
-  $('#providerPanel .dropdown-option').removeClass('is-selected');
-  $option.addClass('is-selected');
-  $('#provider').trigger('change');
+  $('#providerTiles .provider-tile').each(function () {
+    $(this).toggleClass('is-active', $(this).attr('data-provider') === value);
+  });
+  applyProviderPreset(value);
 }
-
-function closeProviderPanel() {
-  $('#providerPanel').prop('hidden', true);
-  $('#providerTrigger').attr('aria-expanded', 'false');
-}
-
-$('#providerTrigger').on('click', (e) => {
-  e.stopPropagation();
-  const $panel = $('#providerPanel');
-  const willOpen = !!$panel.prop('hidden');
-  $panel.prop('hidden', !willOpen);
-  $('#providerTrigger').attr('aria-expanded', String(willOpen));
-});
-
-$('#providerPanel').on('click', '.dropdown-option', function (e) {
-  e.stopPropagation();
-  if ($(this).prop('disabled')) return;
-  setProviderValue(String($(this).attr('data-value') || ''));
-  closeProviderPanel();
-});
-
-$(document).on('click', () => closeProviderPanel());
-$(document).on('keydown', (e) => {
-  if (e.key === 'Escape') closeProviderPanel();
-});
-
-// Sync initial label / selection state on load
-$(() => {
-  setProviderValue(String($('#provider').val() || 'gmail'));
-});
 
 // --- Entitlement / Paywall ---
 
@@ -448,15 +621,27 @@ async function checkUserEntitlement() {
   } catch (_) {
     currentUserPaid = false;
   }
-  updateScheduleLock();
+  await refreshQuota();
 }
 
-function updateScheduleLock() {
-  const overlay = $('#scheduleLockOverlay');
-  if (currentUserPaid) {
-    overlay.addClass('hidden');
-  } else {
-    overlay.removeClass('hidden');
+async function refreshQuota() {
+  if (!currentUserId) {
+    $('#quotaText').text('—');
+    return;
+  }
+  try {
+    const quota = await checkEmailQuota(BASE_URL, currentUserId, currentTenantKey);
+    const perSync = Number((quota as any).perSync) || 5;
+    lastQuota = { used: quota.used || 0, total: quota.total || 0, paid: !!quota.paid };
+    if (lastQuota.paid) {
+      $('#quotaChip').html(`<i class="fas fa-check"></i> <span>${t('setup.quotaPro')}</span>`);
+    } else {
+      $('#quotaChip').html(
+        `<span class="quota-text">${perSync}</span><span> ${t('setup.quotaSuffixFree', { n: String(perSync) })}</span>`
+      );
+    }
+  } catch (_) {
+    $('#quotaText').text('—');
   }
 }
 
@@ -467,10 +652,17 @@ async function handleUpgrade() {
         showResult(t('msg.getUserFailed'), 'error');
         return;
       }
+      const payload: Record<string, unknown> = { userId: currentUserId };
+      if (upgradeTarget?.scheduleId) {
+        payload.scheduleId = upgradeTarget.scheduleId;
+        payload.accountEmail = upgradeTarget.email;
+      } else if (upgradeTarget?.intent === 'credit') {
+        payload.intent = 'credit';
+      }
       const resp = await fetch(`${BASE_URL}/api/alipay/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUserId })
+        body: JSON.stringify(payload)
       });
       if (!resp.ok) {
         const errData = await resp.json().catch(() => null);
@@ -593,8 +785,27 @@ async function showAlipayQRModal(
   if (paid) {
     $('#alipayStatus').addClass('alipay-status-success').text(t('alipay.success'));
     $('#alipayWaiting').hide();
+
+    // Capture intent before resetting upgradeTarget
+    const wasCredit = upgradeTarget?.intent === 'credit';
+    if (wasCredit) {
+      pendingCreditTradeNo = outTradeNo;
+    }
+
     await checkUserEntitlement();
-    setTimeout(() => modal.hide(), 1500);
+    await refreshScheduleList();
+    upgradeTarget = null;
+
+    setTimeout(() => {
+      modal.hide();
+      $('.tab-btn[data-tab="upgrade"]').prop('hidden', true);
+      if (wasCredit) {
+        // Credit purchase: reveal the schedule form so user can fill in details
+        showScheduleAddForm();
+      } else {
+        setTab('schedule');
+      }
+    }, 1200);
   } else {
     modal.hide();
     showResult(t('alipay.cancelled'), 'info');
@@ -614,6 +825,8 @@ interface ScheduleItem {
   lastSyncStatus: string | null;
   lastSyncMessage: string | null;
   createdAt: number;
+  paid?: boolean;
+  paidUntil?: number | null;
 }
 
 async function autoFillBitableContext() {
@@ -642,28 +855,24 @@ function showScheduleResult(message: string, type: 'success' | 'error' | 'info')
 }
 
 function renderScheduleList(schedules: ScheduleItem[]) {
-  const $container = $('#scheduleListContainer');
   const $list = $('#scheduleList');
-  const $count = $('#scheduleCount');
+  $list.empty();
 
   if (!schedules.length) {
-    $container.hide();
+    $list.append(`
+      <div id="scheduleEmpty" class="schedule-empty">
+        <i class="fas fa-clock"></i>
+        <p>${escapeHtml(t('schedule.empty'))}</p>
+      </div>
+    `);
+    $('#schedulePaidSummary').text('—');
+    $('#schedulePaidBar').css('width', '0%');
     return;
   }
 
-  $container.show();
-  $count.text(`${schedules.length} ${t('schedule.tasks')}`);
-  $list.empty();
-
-  const providerLabels: Record<string, string> = {
-    gmail: 'Gmail',
-    qq: 'QQ',
-    '163': '163',
-    feishu: t('provider.feishu'),
-    yahoo: 'Yahoo',
-    outlook: 'Outlook',
-    custom: t('provider.custom')
-  };
+  const paidCount = schedules.filter(s => s.paid || currentUserPaid).length;
+  $('#schedulePaidSummary').text(`${paidCount} / ${schedules.length}`);
+  $('#schedulePaidBar').css('width', `${schedules.length ? (paidCount / schedules.length) * 100 : 0}%`);
 
   const intervalLabels: Record<number, string> = {
     1: t('schedule.perHour'),
@@ -674,45 +883,100 @@ function renderScheduleList(schedules: ScheduleItem[]) {
   };
 
   for (const s of schedules) {
-    const providerLabel = providerLabels[s.provider] || s.provider;
+    const isPaid = !!s.paid || currentUserPaid;
     const intervalLabel = intervalLabels[s.intervalHours] || t('schedule.perNHours', { n: String(s.intervalHours) });
-    const lastSyncText = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString() : t('msg.notSynced');
-    const statusClass = s.lastSyncStatus === 'success' ? 'schedule-item-status-ok'
-      : s.lastSyncStatus === 'failed' ? 'schedule-item-status-fail' : '';
-    const statusIcon = s.lastSyncStatus === 'success' ? 'fa-circle-check'
-      : s.lastSyncStatus === 'failed' ? 'fa-circle-xmark' : 'fa-clock';
+    const mono = PROVIDER_MONO[s.provider] || PROVIDER_MONO.custom;
+    const lastSyncText = s.lastSyncAt ? formatRelative(s.lastSyncAt) : t('msg.notSynced');
+    const statusState = s.lastSyncStatus === 'failed' ? 'fail' : s.lastSyncStatus === 'success' ? 'ok' : '';
+    const paidUntilLabel = s.paidUntil ? new Date(s.paidUntil).toISOString().slice(0, 10) : '';
+
+    const paidBody = `
+      <div class="schedule-item-row2">
+        <span class="schedule-pill">${escapeHtml(intervalLabel)}</span>
+        <span class="schedule-folder-text">${escapeHtml(s.folder)}</span>
+      </div>
+      <div class="schedule-item-row3${statusState ? ' is-' + statusState : ''}">
+        <span class="schedule-item-status-dot"></span>
+        <span>${escapeHtml(s.lastSyncStatus === 'failed' ? t('schedule.lastFail') : lastSyncText)}</span>
+        ${paidUntilLabel ? `<span class="schedule-item-paid-until">${t('schedule.until')} ${escapeHtml(paidUntilLabel)}</span>` : ''}
+      </div>
+    `;
+    const freeBody = `<div class="schedule-item-free-note">${escapeHtml(t('schedule.freeNote'))}</div>`;
 
     const $item = $(`
-      <div class="schedule-item" data-schedule-id="${escapeHtml(s.id)}">
-        <div class="schedule-item-header">
-          <div class="schedule-item-info">
-            <span class="schedule-item-provider">${escapeHtml(providerLabel)}</span>
+      <div class="schedule-item${isPaid ? '' : ' is-free'}" data-schedule-id="${escapeHtml(s.id)}">
+        <span class="schedule-item-mono" style="background:${mono.color}">${escapeHtml(mono.mono)}</span>
+        <div class="schedule-item-body">
+          <div class="schedule-item-row1">
             <span class="schedule-item-email">${escapeHtml(s.email)}</span>
+            ${isPaid
+              ? `<span class="badge badge-pro"><i class="fas fa-check"></i> PRO</span>`
+              : `<span class="badge badge-free"><i class="fas fa-lock"></i> FREE</span>`}
           </div>
-          <div class="schedule-item-actions">
-            <button class="schedule-item-btn schedule-item-btn-delete" title="Delete">
-              <i class="fas fa-trash-can"></i>
-            </button>
-          </div>
+          ${isPaid ? paidBody : freeBody}
         </div>
-        <div class="schedule-item-details">
-          <span><i class="fas fa-hourglass-half"></i> ${escapeHtml(intervalLabel)}</span>
-          <span><i class="fas fa-inbox"></i> ${escapeHtml(s.folder)}</span>
-          <span class="${statusClass}"><i class="fas ${statusIcon}"></i> ${escapeHtml(lastSyncText)}</span>
-          ${s.lastSyncMessage ? `<span class="${statusClass}">${escapeHtml(s.lastSyncMessage)}</span>` : ''}
-        </div>
+        ${isPaid
+          ? `<button class="schedule-item-icon-btn schedule-item-delete" title="${escapeHtml(t('schedule.delete'))}"><i class="fas fa-trash-can"></i></button>`
+          : `<button class="schedule-item-cta schedule-item-upgrade"><span class="price">¥499</span><span>${escapeHtml(t('schedule.activate'))}</span></button>`}
       </div>
     `);
 
-    $item.find('.schedule-item-btn-delete').on('click', () => handleDeleteSchedule(s.id, s.email));
+    $item.find('.schedule-item-delete').on('click', () => handleDeleteSchedule(s.id, s.email));
+    $item.find('.schedule-item-upgrade').on('click', () => openUpgradeFor(s));
     $list.append($item);
   }
+}
+
+function formatRelative(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return t('time.justNow');
+  if (diff < 3_600_000) return t('time.minutesAgo', { n: String(Math.floor(diff / 60_000)) });
+  if (diff < 86_400_000) return t('time.hoursAgo', { n: String(Math.floor(diff / 3_600_000)) });
+  return new Date(ts).toLocaleString();
+}
+
+function openUpgradeFor(s: ScheduleItem) {
+  upgradeTarget = { scheduleId: s.id, provider: s.provider, email: s.email };
+  const mono = PROVIDER_MONO[s.provider] || PROVIDER_MONO.custom;
+  $('#upgradeTargetMono').text(mono.mono).css('background', mono.color);
+  $('#upgradeTargetEmail').text(s.email);
+  $('.tab-btn[data-tab="upgrade"]').prop('hidden', false);
+  setTab('upgrade');
+}
+
+function openUpgradeForCredit() {
+  upgradeTarget = { intent: 'credit' };
+  $('#upgradeTargetMono').text('+').css('background', '#5C5C5C');
+  $('#upgradeTargetEmail').text(t('upgrade.creditTarget'));
+  $('.tab-btn[data-tab="upgrade"]').prop('hidden', false);
+  setTab('upgrade');
+}
+
+function showScheduleAddForm() {
+  $('#scheduleFormSection').prop('hidden', false);
+  setTab('schedule');
+  setTimeout(() => {
+    $('#scheduleFormSection')[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 30);
+}
+
+async function startAddAccountFlow() {
+  // If user already holds user-level entitlement, skip payment.
+  if (currentUserPaid) {
+    pendingCreditTradeNo = '';
+    showScheduleAddForm();
+    return;
+  }
+  // Pay first → pop Alipay; the modal poll will reveal the form on success.
+  openUpgradeForCredit();
+  setTimeout(() => { handleUpgrade(); }, 250);
 }
 
 async function refreshScheduleList() {
   try {
     const params = new URLSearchParams();
     if (currentUserId) params.set('userId', currentUserId);
+    if (currentTenantKey) params.set('tenantKey', currentTenantKey);
     const resp = await fetch(`${BASE_URL}/api/schedule/list?${params.toString()}`);
     const data = await resp.json();
     if (data.status === 'ok' && Array.isArray(data.schedules)) {
@@ -747,7 +1011,7 @@ async function handleEnableSchedule() {
   $('#enableSchedule').prop('disabled', true);
 
   try {
-    const payload = {
+    const payload: Record<string, unknown> = {
       intervalHours,
       imapConfig: {
         provider: getProvider(),
@@ -760,8 +1024,12 @@ async function handleEnableSchedule() {
         maxMessages: getMaxMessages()
       },
       feishuConfig: { personalBaseToken, appToken, tableId },
-      userId: currentUserId || undefined
+      userId: currentUserId || undefined,
+      tenantKey: currentTenantKey || undefined
     };
+    if (pendingCreditTradeNo) {
+      payload.creditOutTradeNo = pendingCreditTradeNo;
+    }
 
     const resp = await fetch(`${BASE_URL}/api/schedule/create`, {
       method: 'POST',
@@ -770,12 +1038,24 @@ async function handleEnableSchedule() {
     });
     const data = await resp.json();
 
+    if (data.status === 'seat_required') {
+      // Backend says no credit available; kick off pay-first flow
+      showScheduleResult(t('msg.seatRequired'), 'info');
+      setTimeout(() => startAddAccountFlow(), 800);
+      return;
+    }
     if (data.status !== 'ok') {
       throw new Error(data.message || t('msg.scheduleAddFailed', { error: 'unknown' }));
     }
 
+    // Credit consumed on the worker; clear local pointer
+    pendingCreditTradeNo = '';
     showScheduleResult(t('msg.scheduleAdded', { email, interval: String(intervalHours) }), 'success');
     await refreshScheduleList();
+    setTimeout(() => {
+      $('#scheduleFormSection').prop('hidden', true);
+      $('#scheduleResultContainer').hide();
+    }, 1500);
   } catch (error) {
     showScheduleResult(t('msg.scheduleAddFailed', { error: (error as Error).message }), 'error');
   } finally {
@@ -814,4 +1094,56 @@ function stopScheduleStatusPolling() {
     clearInterval(scheduleStatusTimer);
     scheduleStatusTimer = null;
   }
+}
+
+// --- User-id chip (one-click copy, handy for support) ---
+
+function maskUid(id: string): string {
+  if (!id) return '';
+  return id.length <= 12 ? id : `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderUidChip(): void {
+  const $chip = $('#uidChip');
+  if (!currentUserId) {
+    $chip.hide();
+    return;
+  }
+  $chip
+    .html(`<span>ID ${maskUid(currentUserId)}</span><i class="fas fa-copy"></i>`)
+    .attr('title', `点击复制用户 ID：${currentUserId}`)
+    .show();
+  $chip.off('click').on('click', async () => {
+    const ok = await copyToClipboard(currentUserId);
+    if (ok) {
+      const $i = $chip.find('i');
+      $i.removeClass('fa-copy').addClass('fa-check');
+      setTimeout(() => $i.removeClass('fa-check').addClass('fa-copy'), 1200);
+    }
+  });
 }
